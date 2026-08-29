@@ -2,7 +2,7 @@ BUN := bun --cwd=web
 UV := uv run --project tools
 
 .DEFAULT_GOAL := help
-.PHONY: help install fix precommit check list-lab-data lab-extract lab-detect \
+.PHONY: help install fix precommit check list-lab-data lab-extract lab-train lab-detect \
         tools-fix tools-format-check tools-lint tools-typecheck tools-test tools-coverage \
         tools-dead-code tools-unused-deps tools-security tools-audit build \
         web-typecheck web-lint web-fix web-test web-build dev clean
@@ -83,6 +83,9 @@ list-lab-data: ## list saved lab recordings (data/recordings)
 
 lab-extract: ## extract labeled frames from recordings (data/recordings -> data/frames)
 	cd tools && uv run python -m kvt.dataset
+
+lab-train: ## train the keybed corner detector on synthetic renders (data/models/keybed_net.pt)
+	cd tools && uv run python -m kvt.train
 
 lab-detect: lab-extract ## run keybed detector evaluation on extracted frames
 	cd tools && uv run python -m kvt.evaluate

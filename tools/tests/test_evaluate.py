@@ -9,7 +9,9 @@ import pytest
 
 from kvt.dataset import Frame, extract
 from kvt.dataset import main as dataset_main
-from kvt.evaluate import evaluate_frame, main, run
+from kvt.evaluate import evaluate_frame, main, net_detector, run
+from kvt.model import KeybedNet
+from kvt.render import render_sample
 
 IMAGE_SIZE = (320, 240)
 KEYBED = (60, 80, 260, 104)
@@ -100,6 +102,29 @@ def test_evaluate_frame_without_ground_truth_still_locks(tmp_path: Path) -> None
     assert result.locked
     assert not result.success
     assert result.mean_error_px is None
+
+
+def test_evaluate_frame_with_net_detector(tmp_path: Path) -> None:
+    sample = render_sample(np.random.default_rng(7))
+    image_path = tmp_path / "synthetic.png"
+    cv2.imwrite(str(image_path), cv2.cvtColor(sample.image.astype(np.uint8), cv2.COLOR_RGB2BGR))
+    frame = Frame(
+        image_path=image_path,
+        corners_px=sample.quad_px,
+        source_stem="synthetic",
+        kind="snap",
+    )
+    result = evaluate_frame(frame, "net", net_detector(KeybedNet()))
+    height, width = sample.image.shape[:2]
+    if result.quad_px is None:
+        assert not result.locked
+        assert result.mean_error_px is None
+    else:
+        assert result.locked
+        assert np.all(result.quad_px[:, 0] >= 0.0)
+        assert np.all(result.quad_px[:, 0] <= width)
+        assert np.all(result.quad_px[:, 1] >= 0.0)
+        assert np.all(result.quad_px[:, 1] <= height)
 
 
 def test_evaluate_frame_raises_on_unreadable_image(tmp_path: Path) -> None:

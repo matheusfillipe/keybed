@@ -1,6 +1,7 @@
 """Evaluate the keybed detector against sidecar ground truth."""
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -9,18 +10,43 @@ import cv2
 import numpy as np
 
 from kvt.dataset import Frame, load_frames
-from kvt.detect import find_keybed, find_keybed_pattern
+from kvt.detect import Detection, find_keybed, find_keybed_pattern
+from kvt.model import KeybedNet, load_model, predict_corners
 
-Method = Literal["v0", "pattern"]
-_DETECTORS = {"v0": find_keybed, "pattern": find_keybed_pattern}
+Method = Literal["v0", "pattern", "net"]
+Detector = Callable[[np.ndarray], Detection | None]
+_DETECTORS: dict[str, Detector] = {"v0": find_keybed, "pattern": find_keybed_pattern}
 
+_PRESENT_THRESHOLD = 0.5
 _SUCCESS_RADIUS_PX = 15.0
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_FRAMES_DIR = _REPO_ROOT / "data" / "frames"
 DEFAULT_OUT_DIR = _REPO_ROOT / "data" / "out" / "detect"
+DEFAULT_MODEL_PATH = _REPO_ROOT / "data" / "models" / "keybed_net.pt"
 _GREEN = (0, 255, 0)
 _BLUE = (255, 0, 0)
 _RED = (0, 0, 255)
+
+
+def default_method() -> Method:
+    return "net" if DEFAULT_MODEL_PATH.is_file() else "pattern"
+
+
+def net_detector(model: KeybedNet) -> Detector:
+    def detect(image_bgr: np.ndarray) -> Detection | None:
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        quad_px, present = predict_corners(model, image_rgb)
+        if present < _PRESENT_THRESHOLD:
+            return None
+        return Detection(quad_px=quad_px, confidence=present)
+
+    return detect
+
+
+def _detector_for(method: Method) -> Detector:
+    if method == "net":
+        return net_detector(load_model(DEFAULT_MODEL_PATH))
+    return _DETECTORS[method]
 
 
 @dataclass
@@ -33,11 +59,15 @@ class FrameResult:
     mean_error_px: float | None
 
 
-def evaluate_frame(frame: Frame, method: Method = "pattern") -> FrameResult:
+def evaluate_frame(
+    frame: Frame, method: Method = "pattern", detector: Detector | None = None
+) -> FrameResult:
     image = cv2.imread(str(frame.image_path))
     if image is None:
         raise ValueError(f"cannot read frame {frame.image_path}")
-    detection = _DETECTORS[method](image)
+    if detector is None:
+        detector = _detector_for(method)
+    detection = detector(image)
     if detection is None:
         return FrameResult(
             source_stem=frame.source_stem,
@@ -70,7 +100,8 @@ def evaluate_frame(frame: Frame, method: Method = "pattern") -> FrameResult:
 def run(frames_dir: Path, out_dir: Path, method: Method = "pattern") -> list[FrameResult]:
     frames = load_frames(frames_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    results = [evaluate_frame(frame, method) for frame in frames]
+    detector = _detector_for(method)
+    results = [evaluate_frame(frame, method, detector) for frame in frames]
     for frame, result in zip(frames, results, strict=True):
         _write_preview(frame, result, out_dir)
     _print_table(results)
@@ -166,9 +197,10 @@ def main() -> None:
     )
     parser.add_argument("--frames-dir", type=Path, default=DEFAULT_FRAMES_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    parser.add_argument("--method", choices=("v0", "pattern"), default="pattern")
+    parser.add_argument("--method", choices=("v0", "pattern", "net"), default=None)
     args = parser.parse_args()
-    run(args.frames_dir, args.out_dir, cast(Method, args.method))
+    method = cast(Method, args.method) if args.method is not None else default_method()
+    run(args.frames_dir, args.out_dir, method)
 
 
 if __name__ == "__main__":
