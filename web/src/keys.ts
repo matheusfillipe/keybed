@@ -17,7 +17,7 @@ const BLACK_OFFSETS = [-1, 0.6, -1, 1.75, -1, -1, 3.6, -1, 4.63, -1, 5.66, -1];
 const BLACK_WIDTH = 0.58;
 const WHITE_COUNT = 52;
 export const LOW_PITCH = 21;
-const HIGH_PITCH = 108;
+export const HIGH_PITCH = 108;
 
 export interface KeyRect {
   u0: number;
