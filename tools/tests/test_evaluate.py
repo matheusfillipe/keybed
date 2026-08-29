@@ -12,10 +12,11 @@ from kvt.dataset import main as dataset_main
 from kvt.evaluate import evaluate_frame, main, run
 
 IMAGE_SIZE = (320, 240)
-KEYBED = (60, 80, 260, 160)
+KEYBED = (60, 80, 260, 104)
 BLACK_OFFSETS = (0.60, 1.75, 3.60, 4.63, 5.66)
 BLACK_WIDTH = 0.58
 WHITE_COUNT = 52
+KEYBED_DEPTH = 6.38
 
 
 def _render_keybed_snap(path: Path) -> None:
@@ -23,10 +24,10 @@ def _render_keybed_snap(path: Path) -> None:
     x0, y0, x1, y1 = KEYBED
     image[y0:y1, x0:x1] = 235
     width = x1 - x0
-    bar_bottom = y0 + int((y1 - y0) * 0.6)
-    for octave in range(8):
+    bar_bottom = y0 + round((y1 - y0) * 0.6)
+    for octave in range(7):
         for offset in BLACK_OFFSETS:
-            u0 = 7 * octave + offset
+            u0 = 2.0 + 7 * octave + offset
             u1 = u0 + BLACK_WIDTH
             if u1 > WHITE_COUNT:
                 continue

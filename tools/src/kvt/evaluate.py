@@ -3,12 +3,16 @@
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 import cv2
 import numpy as np
 
 from kvt.dataset import Frame, load_frames
-from kvt.detect import find_keybed
+from kvt.detect import find_keybed, find_keybed_pattern
+
+Method = Literal["v0", "pattern"]
+_DETECTORS = {"v0": find_keybed, "pattern": find_keybed_pattern}
 
 _SUCCESS_RADIUS_PX = 15.0
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -29,11 +33,11 @@ class FrameResult:
     mean_error_px: float | None
 
 
-def evaluate_frame(frame: Frame) -> FrameResult:
+def evaluate_frame(frame: Frame, method: Method = "pattern") -> FrameResult:
     image = cv2.imread(str(frame.image_path))
     if image is None:
         raise ValueError(f"cannot read frame {frame.image_path}")
-    detection = find_keybed(image)
+    detection = _DETECTORS[method](image)
     if detection is None:
         return FrameResult(
             source_stem=frame.source_stem,
@@ -63,10 +67,10 @@ def evaluate_frame(frame: Frame) -> FrameResult:
     )
 
 
-def run(frames_dir: Path, out_dir: Path) -> list[FrameResult]:
+def run(frames_dir: Path, out_dir: Path, method: Method = "pattern") -> list[FrameResult]:
     frames = load_frames(frames_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    results = [evaluate_frame(frame) for frame in frames]
+    results = [evaluate_frame(frame, method) for frame in frames]
     for frame, result in zip(frames, results, strict=True):
         _write_preview(frame, result, out_dir)
     _print_table(results)
@@ -162,8 +166,9 @@ def main() -> None:
     )
     parser.add_argument("--frames-dir", type=Path, default=DEFAULT_FRAMES_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--method", choices=("v0", "pattern"), default="pattern")
     args = parser.parse_args()
-    run(args.frames_dir, args.out_dir)
+    run(args.frames_dir, args.out_dir, cast(Method, args.method))
 
 
 if __name__ == "__main__":

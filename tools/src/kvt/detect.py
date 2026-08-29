@@ -25,6 +25,37 @@ _MAX_PEAK_WIDTH = 12.0
 _REFINE_STEP = 2.0
 _REFINE_FRACTION = 0.15
 _EDGE_BAND = 2
+_PATTERN_WIDTH = 480
+_PATTERN_BLUR_LENGTH = 41
+_PATTERN_MARGIN = 12.0
+_PATTERN_OPEN = np.ones((2, 2), dtype=np.uint8)
+_PATTERN_MIN_AREA = 4
+_PATTERN_MAX_AREA = 800
+_PATTERN_MIN_ASPECT = 0.10
+_PATTERN_MAX_ASPECT = 6.0
+_PATTERN_MIN_FILL = 0.4
+_RANSAC_DISTANCE = 3.0
+_RANSAC_ITERATIONS = 2000
+_RANSAC_MIN_INLIERS = 10
+_RANSAC_MIN_BASELINE = 10.0
+_RANSAC_SEED = 11
+_OCTAVE_MIN = 21.0
+_OCTAVE_MAX = 84.0
+_SLOT_TOLERANCE = 1.5
+_MIN_PATTERN_SCORE = 0.6
+_MIN_PATTERN_HITS = 10
+_MIN_HITS_PER_OCTAVE = 3.0
+_BLACK_OFFSETS = np.array([0.60, 1.75, 3.60, 4.63, 5.66])
+_BAR_CENTER_BIAS = 0.29
+_WHITE_COUNT = 52.0
+_C_OFFSET = 2.0
+_STRIP_DEPTH_UNITS = 6.38
+_BACK_FRACTION = 0.3
+_FRONT_FRACTION = 0.7
+_EXTENT_LOW = 0.5
+_EXTENT_HIGH = 1.3
+_ANCHOR_MARGIN = 0.5
+_VISIBILITY_FREE = 0.3
 
 
 @dataclass
@@ -218,3 +249,290 @@ def _shift_edges(quad: np.ndarray, left: float, right: float) -> np.ndarray:
         ],
         dtype=np.float64,
     )
+
+
+def _pattern_boxes(small: np.ndarray, ksize: tuple[int, int]) -> np.ndarray:
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    blur = cv2.blur(gray, ksize)
+    mask: np.ndarray = (gray < blur - _PATTERN_MARGIN).astype(np.uint8)
+    mask *= 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _PATTERN_OPEN)
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    boxes = []
+    for i in range(1, int(count)):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area < _PATTERN_MIN_AREA or area > _PATTERN_MAX_AREA:
+            continue
+        box_w = float(stats[i, cv2.CC_STAT_WIDTH])
+        box_h = float(stats[i, cv2.CC_STAT_HEIGHT])
+        if box_w <= 0.0 or box_h <= 0.0:
+            continue
+        aspect = box_w / box_h
+        fill = area / (box_w * box_h)
+        if (
+            aspect < _PATTERN_MIN_ASPECT
+            or aspect > _PATTERN_MAX_ASPECT
+            or fill <= _PATTERN_MIN_FILL
+        ):
+            continue
+        center = centroids[i]
+        boxes.append((float(center[0]), float(center[1]), box_w, box_h))
+    if not boxes:
+        return np.zeros((0, 4), dtype=np.float64)
+    return np.array(boxes, dtype=np.float64)
+
+
+def _dominant_line(boxes: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    points = boxes[:, :2]
+    rng = np.random.default_rng(_RANSAC_SEED)
+    best_count = 0
+    best: tuple[np.ndarray, np.ndarray] | None = None
+    for _ in range(_RANSAC_ITERATIONS):
+        i, j = rng.choice(len(points), 2, replace=False)
+        direction = points[j] - points[i]
+        norm = float(np.linalg.norm(direction))
+        if norm < _RANSAC_MIN_BASELINE:
+            continue
+        direction = direction / norm
+        normal = np.array([-direction[1], direction[0]])
+        distances = np.abs((points - points[i]) @ normal)
+        count = int((distances < _RANSAC_DISTANCE).sum())
+        if count > best_count:
+            best_count = count
+            best = (points[i].copy(), direction.copy())
+    if best is None or best_count < _RANSAC_MIN_INLIERS:
+        return None
+    point, direction = best
+    normal = np.array([-direction[1], direction[0]])
+    inliers = points[np.abs((points - point) @ normal) < _RANSAC_DISTANCE]
+    mean = inliers.mean(axis=0)
+    _, _, vt = np.linalg.svd(inliers - mean)
+    axis = vt[0]
+    normal = np.array([-axis[1], axis[0]])
+    idx = np.flatnonzero(np.abs((points - mean) @ normal) < _RANSAC_DISTANCE)
+    if len(idx) < _RANSAC_MIN_INLIERS:
+        return None
+    return mean, axis, idx
+
+
+def _slot_score(
+    residuals: np.ndarray, period: float, phase: float, slots: np.ndarray
+) -> tuple[int, float]:
+    offset = np.mod(residuals - phase, period)[:, None]
+    diff = np.abs(np.mod(offset - slots[None, :], period))
+    distance = np.minimum(diff, period - diff).min(axis=1)
+    hits = distance < _SLOT_TOLERANCE
+    return int(hits.sum()), float(distance[hits].sum())
+
+
+def _fit_pattern(s: np.ndarray) -> tuple[float, float, float, int, float] | None:
+    s_ref = float(s.min())
+    best: tuple[int, float, float, float, float] | None = None
+    for period in np.arange(_OCTAVE_MIN, _OCTAVE_MAX + 1e-9, 0.5):
+        for sign in (1.0, -1.0):
+            residuals = np.mod(sign * (s - s_ref), period)
+            slots = np.mod(_BLACK_OFFSETS * period / 7.0, period)
+            phases = np.mod(residuals[:, None] - slots[None, :], period).ravel()
+            for phase in phases:
+                hits, spread = _slot_score(residuals, period, phase, slots)
+                candidate = (hits, -spread, period, sign, phase)
+                if best is None or candidate[:2] > best[:2]:
+                    best = candidate
+    if best is None:
+        return None
+    hits, neg_spread, period, sign, phase = best
+    for period_now in np.arange(
+        max(_OCTAVE_MIN, period - 0.5), min(_OCTAVE_MAX, period + 0.5) + 1e-9, 0.05
+    ):
+        residuals = np.mod(sign * (s - s_ref), period_now)
+        slots = np.mod(_BLACK_OFFSETS * period_now / 7.0, period_now)
+        phases = np.mod(residuals[:, None] - slots[None, :], period_now).ravel()
+        for phase_now in phases:
+            now, spread = _slot_score(residuals, period_now, phase_now, slots)
+            if now > hits or (now == hits and spread < -neg_spread):
+                hits, neg_spread, period, phase = now, -spread, period_now, phase_now
+    score = hits / len(s)
+    if score <= _MIN_PATTERN_SCORE or hits < _MIN_PATTERN_HITS:
+        return None
+    return period, sign, phase, hits, score
+
+
+def _solve_pattern(
+    values: np.ndarray, period: float, sign: float, phase: float, s_ref: float
+) -> tuple[float, float, np.ndarray, np.ndarray, float] | None:
+    w = period / 7.0
+    signed = sign * (values - s_ref)
+    anchor = phase
+    j = np.zeros(len(values), dtype=int)
+    k = np.zeros(len(values), dtype=float)
+    for _ in range(3):
+        e = np.mod(signed - anchor, period)
+        slots = np.mod(_BLACK_OFFSETS * w, period)
+        diff = np.abs(np.mod(e[:, None] - slots[None, :], period))
+        j = np.argmin(np.minimum(diff, period - diff), axis=1)
+        k = np.round(((signed - anchor) / w - _BLACK_OFFSETS[j]) / 7.0)
+        design = np.column_stack([np.ones(len(values)), _BLACK_OFFSETS[j] + 7.0 * k])
+        solution, *_ = np.linalg.lstsq(design, signed, rcond=None)
+        if not np.isfinite(solution).all():
+            return None
+        anchor, w = float(solution[0]), float(solution[1])
+        if not _OCTAVE_MIN <= w * 7.0 <= _OCTAVE_MAX:
+            return None
+    e = np.mod(signed - anchor, period)
+    slots = np.mod(_BLACK_OFFSETS * w, period)
+    diff = np.abs(np.mod(e[:, None] - slots[None, :], period))
+    j = np.argmin(np.minimum(diff, period - diff), axis=1)
+    k = np.round(((signed - anchor) / w - _BLACK_OFFSETS[j]) / 7.0)
+    residual_sum = float(np.abs(signed - (anchor + w * (_BLACK_OFFSETS[j] + 7.0 * k))).sum())
+    return anchor, w, j, k, residual_sum
+
+
+def _anchor_shift(u: np.ndarray) -> int | None:
+    best_count = 0
+    best: int | None = None
+    for m in range(-8, 9):
+        shifted = u + 7.0 * m
+        count = int(
+            ((shifted >= -_ANCHOR_MARGIN) & (shifted <= _WHITE_COUNT + _ANCHOR_MARGIN)).sum()
+        )
+        if count > best_count:
+            best_count = count
+            best = m
+    return best
+
+
+def _front_side_sign(
+    small: np.ndarray,
+    point: np.ndarray,
+    axis: np.ndarray,
+    normal: np.ndarray,
+    depth_px: float,
+    inlier_pts: np.ndarray,
+) -> float:
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    height, width = gray.shape
+    projected = (inlier_pts - point) @ axis
+    samples = np.linspace(float(projected.min()), float(projected.max()), 60)
+    scores = []
+    for sigma in (1.0, -1.0):
+        total = 0.0
+        count = 0
+        for t in samples:
+            for f in (0.7, 0.8, 0.9):
+                q = point + axis * t + sigma * normal * f * depth_px
+                x, y = round(float(q[0])), round(float(q[1]))
+                if 0 <= x < width and 0 <= y < height:
+                    total += float(gray[y, x])
+                    count += 1
+        scores.append(total / max(1, count))
+    return 1.0 if scores[0] >= scores[1] else -1.0
+
+
+def _order_pattern_quad(points: np.ndarray) -> np.ndarray:
+    total = points.sum(axis=1)
+    diagonal = points[:, 1] - points[:, 0]
+    return np.array(
+        [
+            points[int(np.argmin(total))],
+            points[int(np.argmin(diagonal))],
+            points[int(np.argmax(total))],
+            points[int(np.argmax(diagonal))],
+        ],
+        dtype=np.float64,
+    )
+
+
+def find_keybed_pattern(image_bgr: np.ndarray) -> Detection | None:
+    height, width = image_bgr.shape[:2]
+    if height == 0 or width == 0:
+        return None
+    scale = _PATTERN_WIDTH / width
+    small = cv2.resize(
+        image_bgr, (_PATTERN_WIDTH, max(1, round(height * scale))), interpolation=cv2.INTER_AREA
+    )
+    best: Detection | None = None
+    for ksize in ((_PATTERN_BLUR_LENGTH, 1), (1, _PATTERN_BLUR_LENGTH)):
+        detection = _find_pattern_pass(image_bgr, small, scale, ksize)
+        if detection is not None and (best is None or detection.confidence > best.confidence):
+            best = detection
+    return best
+
+
+def _find_pattern_pass(
+    image_bgr: np.ndarray, small: np.ndarray, scale: float, ksize: tuple[int, int]
+) -> Detection | None:
+    boxes = _pattern_boxes(small, ksize)
+    if len(boxes) < _RANSAC_MIN_INLIERS:
+        return None
+    line = _dominant_line(boxes)
+    if line is None:
+        return None
+    point, axis, idx = line
+    inliers = boxes[idx]
+    normal = np.array([-axis[1], axis[0]])
+    extent = np.abs(normal[0]) * inliers[:, 2] + np.abs(normal[1]) * inliers[:, 3]
+    median = float(np.median(extent))
+    inliers = inliers[(extent >= _EXTENT_LOW * median) & (extent <= _EXTENT_HIGH * median)]
+    if len(inliers) < _RANSAC_MIN_INLIERS:
+        return None
+    s = (inliers[:, :2] - point) @ axis
+    fit = _fit_pattern(s)
+    if fit is None:
+        return None
+    period, sign, phase, hits, score = fit
+    solves = []
+    for mirrored in (False, True):
+        values = -s if mirrored else s
+        s_ref = float(values.min())
+        solved = _solve_pattern(values, period, sign, phase, s_ref)
+        if solved is not None:
+            solves.append((solved[4], values, s_ref, solved))
+    if not solves:
+        return None
+    solves.sort(key=lambda item: item[0])
+    _, values, s_ref, solved = solves[0]
+    anchor, w, j, k = solved[:4]
+    if hits / max(1, len(np.unique(k))) < _MIN_HITS_PER_OCTAVE:
+        return None
+    u = _C_OFFSET + _BAR_CENTER_BIAS + _BLACK_OFFSETS[j] + 7.0 * k
+    m = _anchor_shift(u)
+    if m is None:
+        return None
+    u = u + 7.0 * m
+    in_range = (u >= -_ANCHOR_MARGIN) & (u <= _WHITE_COUNT + _ANCHOR_MARGIN)
+    if int(in_range.sum()) < _MIN_PATTERN_HITS:
+        return None
+    if int(in_range.sum()) < len(values):
+        values = values[in_range]
+        resolved = _solve_pattern(values, period, sign, phase, s_ref)
+        if resolved is None:
+            return None
+        anchor, w, j, k = resolved[:4]
+        u = _C_OFFSET + _BAR_CENTER_BIAS + _BLACK_OFFSETS[j] + 7.0 * k
+        m = _anchor_shift(u)
+        if m is None:
+            return None
+        u = u + 7.0 * m
+        if u.min() < -_ANCHOR_MARGIN or u.max() > _WHITE_COUNT + _ANCHOR_MARGIN:
+            return None
+    inlier_pts = inliers[in_range, :2]
+    depth_px = _STRIP_DEPTH_UNITS * w
+    sigma = _front_side_sign(small, point, axis, normal, depth_px, inlier_pts)
+    t_back = s_ref + sign * (anchor + w * (0.0 - _C_OFFSET - _BAR_CENTER_BIAS - 7.0 * m))
+    t_front = s_ref + sign * (anchor + w * (_WHITE_COUNT - _C_OFFSET - _BAR_CENTER_BIAS - 7.0 * m))
+    if mirrored:
+        t_back = -t_back
+        t_front = -t_front
+    p_back_a = point + axis * t_back - sigma * normal * _BACK_FRACTION * depth_px
+    p_front_a = point + axis * t_back + sigma * normal * _FRONT_FRACTION * depth_px
+    p_front_b = point + axis * t_front + sigma * normal * _FRONT_FRACTION * depth_px
+    p_back_b = point + axis * t_front - sigma * normal * _BACK_FRACTION * depth_px
+    quad = _order_pattern_quad(np.array([p_back_a, p_front_a, p_front_b, p_back_b]))
+    quad = quad / scale
+    edge = np.linspace(quad[0], quad[3], 100)
+    full_h, full_w = image_bgr.shape[:2]
+    inside = (edge[:, 0] >= 0) & (edge[:, 0] < full_w) & (edge[:, 1] >= 0) & (edge[:, 1] < full_h)
+    frac_out = 1.0 - float(inside.mean())
+    visibility = min(1.0, max(0.0, (1.0 - frac_out) / (1.0 - _VISIBILITY_FREE)))
+    confidence = score * min(1.0, hits / 20.0) * visibility
+    return Detection(quad_px=quad, confidence=float(confidence))
