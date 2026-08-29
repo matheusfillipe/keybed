@@ -1,6 +1,6 @@
 # keyboard-vis-tracking
 
-Spike: a camera watches hands on a real keyboard, a browser pipeline rectifies the keys, tracks the hands, and renders keys-light-up visuals aligned in 3D. The runtime is browser-only (web/). Python (tools/) is the offline lab. Eventual home: kinesthesia.
+Spike: automatic video editing for piano video. A camera watches hands on a real keyboard; the browser pipeline detects the keybed, solves its 3D plane, and composites kinesthesia's MIDI-driven visuals into the original camera perspective. CV does geometry only, never notes. The runtime is browser-only (web/). Python (tools/) is the offline lab. Eventual home: kinesthesia.
 
 ## Where things live
 - web/ TS browser app (Vite + MediaPipe tasks-vision): the runtime

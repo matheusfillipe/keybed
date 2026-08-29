@@ -2,19 +2,15 @@ import type { HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { type Calibration, type Corners, createCalibration } from "./calibrate";
 import { drawHands } from "./draw";
 import { createHandTracker, type HandTracker } from "./hands";
+import { createHands3D, type Hands3D } from "./hands3d";
+import { findHomography, type Point } from "./homography";
 import {
-  applyHomography,
-  findHomography,
-  type Homography,
-  type Point,
-} from "./homography";
-import {
-  createStrip,
-  drawStripBand,
-  STRIP_HEIGHT,
-  STRIP_WIDTH,
-  type Strip,
-} from "./strip";
+  createScene,
+  DEFAULT_ROLL_HEIGHT,
+  DEFAULT_ROLL_TILT_DEG,
+  type Scene3D,
+} from "./scene";
+import { createStrip, STRIP_HEIGHT, STRIP_WIDTH, type Strip } from "./strip";
 
 const STRIP_QUAD: Point[] = [
   { x: 0, y: 0 },
@@ -86,6 +82,8 @@ function startLoop(
   ctx: CanvasRenderingContext2D,
   calibration: Calibration,
   strip: Strip,
+  scene: Scene3D,
+  hands3d: Hands3D,
 ): void {
   let lastVideoTime = -1;
   let hands: HandLandmarkerResult | null = null;
@@ -107,7 +105,10 @@ function startLoop(
     const toStrip = findHomography(videoPoints, STRIP_QUAD);
     const toVideo = findHomography(STRIP_QUAD, videoPoints);
     strip.render(video, toVideo);
-    drawStripBand(ctx, strip.canvas, w, h);
+    if (hands) {
+      hands3d.update(hands, toStrip, w, h);
+    }
+    scene.render(performance.now());
     calibration.draw(ctx, w, h);
     requestAnimationFrame(frame);
   };
@@ -140,7 +141,34 @@ async function boot(): Promise<void> {
     }
     const calibration = createCalibration(canvas);
     const strip = createStrip();
-    startLoop(video, tracker, canvas, ctx, calibration, strip);
+    const scene = createScene(strip.canvas);
+    const hands3d = createHands3D(scene.root);
+
+    let rollTilt = DEFAULT_ROLL_TILT_DEG;
+    let rollHeight = DEFAULT_ROLL_HEIGHT;
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "1" || event.key === "2") {
+        rollTilt = Math.min(
+          60,
+          Math.max(0, rollTilt + (event.key === "1" ? -5 : 5)),
+        );
+        scene.setRollTilt(rollTilt);
+        console.log(`roll tilt ${rollTilt} deg height ${rollHeight}`);
+      }
+      if (event.key === "3" || event.key === "4") {
+        rollHeight = Math.min(
+          50,
+          Math.max(10, rollHeight + (event.key === "3" ? -1 : 1)),
+        );
+        scene.setRollHeight(rollHeight);
+        console.log(`roll tilt ${rollTilt} deg height ${rollHeight}`);
+      }
+    });
+    window.addEventListener("resize", () => {
+      scene.resize(window.innerWidth, window.innerHeight);
+    });
+
+    startLoop(video, tracker, canvas, ctx, calibration, strip, scene, hands3d);
   } catch (err) {
     errorText = errorMessage(err);
     renderError(canvas, errorText);

@@ -1,11 +1,8 @@
 import { applyHomography, type Homography } from "./homography";
-import { HIGH_PITCH, isBlack, keyRect, LOW_PITCH } from "./keys";
 
 export const STRIP_WIDTH = 1280;
 export const STRIP_HEIGHT = 160;
 const COLUMN_WIDTH_PX = 2;
-const BAND_FRACTION = 0.3;
-const WHITE_COUNT = 52;
 
 export interface Strip {
   canvas: HTMLCanvasElement;
@@ -45,63 +42,4 @@ export function createStrip(): Strip {
       }
     },
   };
-}
-
-function bandTop(height: number): number {
-  return Math.round(height * (1 - BAND_FRACTION));
-}
-
-interface BandRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-function bandRect(width: number, height: number): BandRect {
-  const aspect = STRIP_WIDTH / STRIP_HEIGHT;
-  let h = height - bandTop(height);
-  let w = h * aspect;
-  if (w > width) {
-    w = width;
-    h = w / aspect;
-  }
-  return { x: Math.round((width - w) / 2), y: Math.round(height - h), w, h };
-}
-
-export function drawStripBand(
-  ctx: CanvasRenderingContext2D,
-  strip: HTMLCanvasElement,
-  width: number,
-  height: number,
-): void {
-  const band = bandRect(width, height);
-  ctx.drawImage(strip, band.x, band.y, band.w, band.h);
-
-  ctx.strokeStyle = "rgba(229,229,229,0.25)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let i = 1; i < WHITE_COUNT; i += 1) {
-    const x = band.x + Math.round((i / WHITE_COUNT) * band.w) + 0.5;
-    ctx.moveTo(x, band.y);
-    ctx.lineTo(x, band.y + band.h);
-  }
-  ctx.stroke();
-
-  const blackHeight = band.h * 0.62;
-  for (let pitch = LOW_PITCH; pitch <= HIGH_PITCH; pitch += 1) {
-    if (!isBlack(pitch)) {
-      continue;
-    }
-    const rect = keyRect(pitch);
-    const x = band.x + rect.u0 * band.w;
-    const w = (rect.u1 - rect.u0) * band.w;
-    ctx.fillStyle = "rgba(10,10,10,0.75)";
-    ctx.fillRect(x, band.y, w, blackHeight);
-    ctx.strokeStyle = "rgba(229,229,229,0.15)";
-    ctx.strokeRect(x + 0.5, band.y + 0.5, w - 1, blackHeight - 1);
-  }
-
-  ctx.strokeStyle = "rgba(229,229,229,0.2)";
-  ctx.strokeRect(band.x + 0.5, band.y + 0.5, band.w - 1, band.h - 1);
 }
