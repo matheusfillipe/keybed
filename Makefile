@@ -2,7 +2,7 @@ BUN := bun --cwd=web
 UV := uv run --project tools
 
 .DEFAULT_GOAL := help
-.PHONY: help install fix precommit check lab-data \
+.PHONY: help install fix precommit check list-lab-data \
         tools-fix tools-format-check tools-lint tools-typecheck tools-test tools-coverage \
         tools-dead-code tools-unused-deps tools-security tools-audit build \
         web-typecheck web-lint web-fix web-test web-build dev clean
@@ -78,7 +78,7 @@ web-build: ## bundle the web app (vite build)
 dev: ## run the web dev server (vite)
 	$(BUN) run dev
 
-lab-data: ## list saved lab recordings (data/recordings)
+list-lab-data: ## list saved lab recordings (data/recordings)
 	mkdir -p data/recordings && ls -la data/recordings
 
 clean: ## remove local caches and build artifacts
