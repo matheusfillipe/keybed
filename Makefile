@@ -2,7 +2,7 @@ BUN := bun --cwd=web
 UV := uv run --project tools
 
 .DEFAULT_GOAL := help
-.PHONY: help install fix precommit check list-lab-data \
+.PHONY: help install fix precommit check list-lab-data lab-extract lab-detect \
         tools-fix tools-format-check tools-lint tools-typecheck tools-test tools-coverage \
         tools-dead-code tools-unused-deps tools-security tools-audit build \
         web-typecheck web-lint web-fix web-test web-build dev clean
@@ -80,6 +80,12 @@ dev: ## run the web dev server (vite)
 
 list-lab-data: ## list saved lab recordings (data/recordings)
 	mkdir -p data/recordings && ls -la data/recordings
+
+lab-extract: ## extract labeled frames from recordings (data/recordings -> data/frames)
+	cd tools && uv run python -m kvt.dataset
+
+lab-detect: lab-extract ## run keybed detector evaluation on extracted frames
+	cd tools && uv run python -m kvt.evaluate
 
 clean: ## remove local caches and build artifacts
 	rm -rf tools/.ruff_cache tools/.mypy_cache tools/.pytest_cache tools/.coverage tools/.coverage.* tools/.vulture web/dist

@@ -5,6 +5,7 @@ description = "kvt offline lab: synthetic keyboard data, frame validation, detec
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
+    "opencv-python-headless==5.0.0.93",
 ]
 
 [dependency-groups]
@@ -49,6 +50,11 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 warn_return_any = true
 files = ["src/kvt", "tests"]
+
+[[tool.mypy.overrides]]
+# cv2 ships no type stubs upstream
+module = "cv2"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
