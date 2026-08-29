@@ -1,5 +1,5 @@
 import { applyHomography, type Homography } from "./homography";
-import { HIGH_PITCH, isBlack, KEY_NAMES, keyRect, LOW_PITCH } from "./keys";
+import { HIGH_PITCH, isBlack, keyRect, LOW_PITCH } from "./keys";
 
 export const STRIP_WIDTH = 1280;
 export const STRIP_HEIGHT = 160;
@@ -10,11 +10,6 @@ const WHITE_COUNT = 52;
 export interface Strip {
   canvas: HTMLCanvasElement;
   render(video: HTMLVideoElement, stripToVideo: Homography): void;
-}
-
-export interface FingertipHit {
-  label: string;
-  pitch: number;
 }
 
 export function createStrip(): Strip {
@@ -79,7 +74,6 @@ export function drawStripBand(
   strip: HTMLCanvasElement,
   width: number,
   height: number,
-  hits: FingertipHit[],
 ): void {
   const band = bandRect(width, height);
   ctx.drawImage(strip, band.x, band.y, band.w, band.h);
@@ -110,50 +104,4 @@ export function drawStripBand(
 
   ctx.strokeStyle = "rgba(229,229,229,0.2)";
   ctx.strokeRect(band.x + 0.5, band.y + 0.5, band.w - 1, band.h - 1);
-
-  ctx.globalCompositeOperation = "lighter";
-  for (const hit of hits) {
-    const rect = keyRect(hit.pitch);
-    ctx.fillStyle = isBlack(hit.pitch)
-      ? "rgba(232,121,249,0.4)"
-      : "rgba(34,211,238,0.4)";
-    const x = band.x + rect.u0 * band.w;
-    ctx.fillRect(x, band.y, (rect.u1 - rect.u0) * band.w, band.h);
-  }
-  ctx.globalCompositeOperation = "source-over";
-}
-
-const READOUT_COLORS: Record<string, string> = {
-  L: "#38bdf8",
-  R: "#f472b6",
-};
-
-export function drawReadout(
-  ctx: CanvasRenderingContext2D,
-  hits: FingertipHit[],
-  height: number,
-): void {
-  const byHand = new Map<string, number[]>();
-  for (const hit of hits) {
-    const pitches = byHand.get(hit.label);
-    if (pitches) {
-      if (!pitches.includes(hit.pitch)) {
-        pitches.push(hit.pitch);
-      }
-    } else {
-      byHand.set(hit.label, [hit.pitch]);
-    }
-  }
-  ctx.font = "14px sans-serif";
-  ctx.textAlign = "left";
-  ctx.textBaseline = "bottom";
-  let line = 0;
-  for (const [label, pitches] of byHand) {
-    const names = pitches
-      .map((pitch) => KEY_NAMES[pitch - LOW_PITCH])
-      .join("  ");
-    ctx.fillStyle = READOUT_COLORS[label] ?? "#e5e5e5";
-    ctx.fillText(`${label}: ${names}`, 12, bandTop(height) - 10 - line * 20);
-    line += 1;
-  }
 }

@@ -8,18 +8,14 @@ import {
   type Homography,
   type Point,
 } from "./homography";
-import { pitchAt } from "./keys";
 import {
   createStrip,
-  drawReadout,
   drawStripBand,
-  type FingertipHit,
   STRIP_HEIGHT,
   STRIP_WIDTH,
   type Strip,
 } from "./strip";
 
-const FINGERTIP_LANDMARKS = [8, 12];
 const STRIP_QUAD: Point[] = [
   { x: 0, y: 0 },
   { x: STRIP_WIDTH, y: 0 },
@@ -29,35 +25,6 @@ const STRIP_QUAD: Point[] = [
 
 function cornerPoints(corners: Corners, w: number, h: number): Point[] {
   return corners.map((corner) => ({ x: corner.x * w, y: corner.y * h }));
-}
-
-function fingertipHits(
-  hands: HandLandmarkerResult,
-  toStrip: Homography,
-  w: number,
-  h: number,
-): FingertipHit[] {
-  const hits: FingertipHit[] = [];
-  for (const [i, landmarks] of hands.landmarks.entries()) {
-    const category = hands.handedness[i]?.[0]?.categoryName;
-    const label = category === "Left" ? "L" : category === "Right" ? "R" : "?";
-    const pitches = new Set<number>();
-    for (const index of FINGERTIP_LANDMARKS) {
-      const tip = landmarks[index];
-      if (!tip) {
-        continue;
-      }
-      const stripPoint = applyHomography(toStrip, tip.x * w, tip.y * h);
-      const pitch = pitchAt(stripPoint.x / STRIP_WIDTH);
-      if (pitch !== null) {
-        pitches.add(pitch);
-      }
-    }
-    for (const pitch of pitches) {
-      hits.push({ label, pitch });
-    }
-  }
-  return hits;
 }
 
 function createVideo(): HTMLVideoElement {
@@ -140,9 +107,7 @@ function startLoop(
     const toStrip = findHomography(videoPoints, STRIP_QUAD);
     const toVideo = findHomography(STRIP_QUAD, videoPoints);
     strip.render(video, toVideo);
-    const hits = hands ? fingertipHits(hands, toStrip, w, h) : [];
-    drawStripBand(ctx, strip.canvas, w, h, hits);
-    drawReadout(ctx, hits, h);
+    drawStripBand(ctx, strip.canvas, w, h);
     calibration.draw(ctx, w, h);
     requestAnimationFrame(frame);
   };
