@@ -5,7 +5,7 @@ UV := uv run --project tools
 .PHONY: help install fix precommit check \
         tools-fix tools-format-check tools-lint tools-typecheck tools-test tools-coverage \
         tools-dead-code tools-unused-deps tools-security tools-audit build \
-        web-typecheck web-lint web-fix web-build dev clean
+        web-typecheck web-lint web-fix web-test web-build dev clean
 
 help: ## list available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
@@ -22,7 +22,7 @@ precommit: fix ## hook entry: same as fix
 
 # --- checks (verify, never produce artifacts) ---
 
-check: tools-format-check tools-lint tools-typecheck tools-test web-typecheck web-lint web-build ## run all checks (the pre-commit gate)
+check: tools-format-check tools-lint tools-typecheck tools-test web-typecheck web-lint web-test web-build ## run all checks (the pre-commit gate)
 
 quality: check tools-dead-code tools-unused-deps tools-security tools-audit tools-coverage build ## run the full quality gate
 	@echo "quality gate passed"
@@ -68,6 +68,9 @@ web-lint: ## lint web (biome check)
 
 web-fix: ## autofix web formatting and lint (biome)
 	$(BUN) run fix
+
+web-test: ## run web tests (vitest)
+	$(BUN) run test
 
 web-build: ## bundle the web app (vite build)
 	$(BUN) run build
