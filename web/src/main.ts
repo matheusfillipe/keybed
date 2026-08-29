@@ -3,6 +3,7 @@ import { type Calibration, type Corners, createCalibration } from "./calibrate";
 import { drawHands } from "./draw";
 import { createHandTracker, type HandTracker } from "./hands";
 import type { Point } from "./homography";
+import { createLab } from "./lab";
 import { type GridGeometry, projectGrid, solvePose } from "./pose";
 
 function cornerPoints(corners: Corners, w: number, h: number): Point[] {
@@ -157,6 +158,10 @@ async function boot(): Promise<void> {
     }
     const calibration = createCalibration(canvas);
     startLoop(video, tracker, canvas, ctx, calibration);
+    const stream = video.srcObject;
+    if (stream instanceof MediaStream) {
+      createLab({ video, stream, getCorners: calibration.getCorners });
+    }
   } catch (err) {
     errorText = errorMessage(err);
     renderError(canvas, errorText);
