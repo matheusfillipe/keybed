@@ -1,0 +1,72 @@
+[project]
+name = "kvt-tools"
+version = "0.0.0"
+description = "kvt offline lab: synthetic keyboard data, frame validation, detector training"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff==0.16.3",
+    "mypy==2.3.0",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "vulture==2.16",
+    "deptry==0.25.1",
+    "bandit==1.9.4",
+    "pip-audit==2.10.1",
+    "pre-commit==4.6.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kvt"]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PIE", "RET", "RUF"]
+fixable = ["ALL"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+files = ["src/kvt", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["kvt"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+
+[tool.vulture]
+min_confidence = 80
+
+[tool.deptry]
+known_first_party = ["kvt"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]

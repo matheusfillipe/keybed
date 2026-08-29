@@ -1,0 +1,37 @@
+# secrets
+.env*
+!.env.example
+.rev-ok
+.desloppify/
+.diffler/
+
+# recordings and datasets (personal data, local only)
+data/
+*.mp4
+*.mkv
+exports/
+
+# python
+__pycache__/
+.venv/
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage*
+*.egg-info
+dist/
+build/
+.vulture
+
+# node
+node_modules/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# tooling local state
+.playwright-mcp/
+models/
