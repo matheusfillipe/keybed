@@ -1,6 +1,7 @@
 """Train KeybedNet on synthetic renders and keep the best-val checkpoint."""
 
 import argparse
+import math
 from collections.abc import Iterator
 from multiprocessing.pool import Pool
 from pathlib import Path
@@ -15,11 +16,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MODEL_PATH = _REPO_ROOT / "data" / "models" / "keybed_net.pt"
 
 _FRAME_SIZE = (640, 480)
-_DEFAULT_TRAIN_SAMPLES = 20_000
+_DEFAULT_TRAIN_SAMPLES = 25_000
 _DEFAULT_VAL_SAMPLES = 1_000
-_DEFAULT_EPOCHS = 3
+_DEFAULT_EPOCHS = 6
 _BATCH_SIZE = 64
-_LEARNING_RATE = 3e-4
+_LEARNING_RATE = 1e-3
+_MIN_LEARNING_RATE = 1e-5
 _SEED = 0
 _RENDER_WORKERS = 4
 _CHUNK_SIZE = 8
@@ -61,6 +63,7 @@ def _iter_batches(
 def _train_epoch(
     model: KeybedNet,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
     pool: Pool | None,
     train_samples: int,
     batch_size: int,
@@ -81,6 +84,7 @@ def _train_epoch(
         )
         loss.backward()
         optimizer.step()
+        scheduler.step()
         loss_sum += float(loss.detach()) * inputs.shape[0]
         seen += inputs.shape[0]
     return loss_sum / max(seen, 1)
@@ -88,13 +92,15 @@ def _train_epoch(
 
 def _evaluate(
     model: KeybedNet, pool: Pool | None, val_samples: int, batch_size: int, seed: int
-) -> tuple[float, float]:
+) -> tuple[float, float, float, float]:
     model.eval()
     scale = np.array([float(_FRAME_SIZE[0]), float(_FRAME_SIZE[1])])
     error_sum = 0.0
     error_count = 0
     correct = 0
     seen = 0
+    predicted_all: list[np.ndarray] = []
+    target_all: list[np.ndarray] = []
     with torch.no_grad():
         for inputs, corners, present in _iter_batches(pool, seed + 1, 0, val_samples, batch_size):
             pred_corners, present_logits = model(torch.from_numpy(inputs).unsqueeze(1))
@@ -106,10 +112,17 @@ def _evaluate(
                 errors = np.linalg.norm((predicted[flags] - target[flags]) * scale, axis=2)
                 error_sum += float(errors.mean(axis=1).sum())
                 error_count += int(flags.sum())
+                predicted_all.append(predicted[flags])
+                target_all.append(target[flags])
             correct += int(((probabilities >= 0.5) == flags).sum())
             seen += inputs.shape[0]
     mae = error_sum / error_count if error_count else 0.0
-    return mae, correct / max(seen, 1)
+    predicted_std = 0.0
+    target_std = 0.0
+    if predicted_all and target_all:
+        predicted_std = float((np.concatenate(predicted_all).std(axis=0) * scale).mean())
+        target_std = float((np.concatenate(target_all).std(axis=0) * scale).mean())
+    return mae, correct / max(seen, 1), predicted_std, target_std
 
 
 def train_model(
@@ -123,18 +136,25 @@ def train_model(
     torch.manual_seed(seed)
     model = KeybedNet()
     optimizer = torch.optim.Adam(model.parameters(), lr=_LEARNING_RATE)
+    steps_per_epoch = math.ceil(train_samples / batch_size)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=steps_per_epoch * epochs, eta_min=_MIN_LEARNING_RATE
+    )
     best_mae = float("inf")
     best_state: dict[str, torch.Tensor] | None = None
     pool = Pool(processes=workers) if workers > 0 else None
     try:
         for epoch in range(epochs):
             train_loss = _train_epoch(
-                model, optimizer, pool, train_samples, batch_size, seed, epoch
+                model, optimizer, scheduler, pool, train_samples, batch_size, seed, epoch
             )
-            mae, presence_accuracy = _evaluate(model, pool, val_samples, batch_size, seed)
+            mae, presence_accuracy, predicted_std, target_std = _evaluate(
+                model, pool, val_samples, batch_size, seed
+            )
             print(
                 f"epoch {epoch + 1}/{epochs} train_loss {train_loss:.4f} "
-                f"val_mae_px {mae:.2f} presence_acc {presence_accuracy:.3f}",
+                f"val_mae_px {mae:.2f} presence_acc {presence_accuracy:.3f} "
+                f"pred_std_px {predicted_std:.1f} tgt_std_px {target_std:.1f}",
                 flush=True,
             )
             if mae < best_mae:

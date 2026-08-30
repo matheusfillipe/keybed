@@ -9,6 +9,7 @@ from torch import nn
 from torch.nn import functional as F
 
 INPUT_SIZE = 288
+_SMOOTH_L1_BETA = 0.01
 
 
 class KeybedNet(nn.Module):
@@ -28,12 +29,15 @@ class KeybedNet(nn.Module):
             nn.GroupNorm(8, 96),
             nn.ReLU(),
         )
-        self.corners_head = nn.Linear(96, 8)
-        self.present_head = nn.Linear(96, 1)
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(6), nn.Flatten(), nn.Linear(96 * 6 * 6, 256), nn.ReLU()
+        )
+        self.corners_head = nn.Linear(256, 8)
+        self.present_head = nn.Linear(256, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        pooled = self.body(x).mean(dim=(2, 3))
-        return torch.sigmoid(self.corners_head(pooled)), self.present_head(pooled).squeeze(-1)
+        features = self.head(self.body(x))
+        return torch.sigmoid(self.corners_head(features)), self.present_head(features).squeeze(-1)
 
 
 def corner_loss(
@@ -45,7 +49,10 @@ def corner_loss(
     mask = present.to(pred_corners.dtype).unsqueeze(1)
     denominator = (mask.sum() * pred_corners.shape[1]).clamp(min=1.0)
     corner_term = (
-        F.smooth_l1_loss(pred_corners * mask, target_corners * mask, reduction="sum") / denominator
+        F.smooth_l1_loss(
+            pred_corners * mask, target_corners * mask, reduction="sum", beta=_SMOOTH_L1_BETA
+        )
+        / denominator
     )
     presence_term = F.binary_cross_entropy_with_logits(
         present_logits, present.to(pred_corners.dtype)

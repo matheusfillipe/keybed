@@ -20,8 +20,8 @@ def test_forward_output_shapes() -> None:
     assert bool((corners <= 1.0).all())
 
 
-def test_parameter_count_under_500k() -> None:
-    assert sum(p.numel() for p in KeybedNet().parameters()) < 500_000
+def test_parameter_count_under_1m() -> None:
+    assert sum(p.numel() for p in KeybedNet().parameters()) < 1_000_000
 
 
 def test_preprocess_resizes_and_normalizes() -> None:
