@@ -145,6 +145,60 @@ def test_extract_raises_on_invalid_sidecars(tmp_path: Path) -> None:
         (frames_dir / "labels.json").unlink(missing_ok=True)
 
 
+def _write_gemini_scene(gemini_dir: Path, stem: str, with_kind: bool) -> None:
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+    image = np.zeros((48, 64, 3), dtype=np.uint8)
+    image[10:38, 16:48] = 235
+    for suffix in ("-orig.png", "-mask.png", "-check.png"):
+        cv2.imwrite(str(gemini_dir / f"{stem}{suffix}"), image)
+    sidecar: dict[str, object] = {
+        "startedAt": 0,
+        "durationMs": 0,
+        "corners": [
+            {"x": 0.1, "y": 0.2},
+            {"x": 0.7, "y": 0.2},
+            {"x": 0.8, "y": 0.8},
+            {"x": 0.2, "y": 0.9},
+        ],
+        "imageWidth": 320,
+        "imageHeight": 240,
+        "mimeType": "image/png",
+    }
+    if with_kind:
+        sidecar["kind"] = "snap"
+    (gemini_dir / f"{stem}.json").write_text(json.dumps(sidecar))
+
+
+def test_extract_gemini_scenes_into_frames(tmp_path: Path) -> None:
+    recordings_dir = tmp_path / "recordings"
+    gemini_dir = tmp_path / "gemini"
+    frames_dir = tmp_path / "frames"
+    recordings_dir.mkdir()
+    _write_gemini_scene(gemini_dir, "00", with_kind=False)
+    _write_gemini_scene(gemini_dir, "01", with_kind=True)
+    (gemini_dir / "02-orig.png").write_text("no sidecar")
+    frames = extract(recordings_dir, frames_dir, gemini_dir)
+    gemini_frames = [f for f in frames if f.kind == "gemini"]
+    assert [f.image_path.name for f in gemini_frames] == ["00-orig.png", "01-orig.png"]
+    assert [f.source_stem for f in gemini_frames] == ["00", "01"]
+    expected = np.array([[32.0, 48.0], [224.0, 48.0], [256.0, 192.0], [64.0, 216.0]])
+    assert gemini_frames[0].corners_px is not None
+    assert np.allclose(gemini_frames[0].corners_px, expected)
+    again = extract(recordings_dir, frames_dir, gemini_dir)
+    assert [f.image_path.name for f in again] == [f.image_path.name for f in frames]
+    assert (frames_dir / "00-orig.png").is_file()
+
+
+def test_extract_without_gemini_dir_leaves_frames_unchanged(tmp_path: Path) -> None:
+    recordings_dir = tmp_path / "recordings"
+    frames_dir = tmp_path / "frames"
+    _make_recordings(recordings_dir)
+    with_gemini = extract(recordings_dir, frames_dir, tmp_path / "missing")
+    without_gemini = extract(recordings_dir, tmp_path / "frames-2")
+    assert [f.kind for f in with_gemini] == [f.kind for f in without_gemini]
+    assert all(f.kind != "gemini" for f in without_gemini)
+
+
 def test_load_frames_ignores_malformed_labels(tmp_path: Path) -> None:
     frames_dir = tmp_path / "frames"
     frames_dir.mkdir()

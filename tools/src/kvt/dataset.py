@@ -1,4 +1,4 @@
-"""Extract labeled frames from recorded snapshots and clips."""
+"""Extract labeled frames from recorded snapshots, clips, and gemini scenes."""
 
 import argparse
 import json
@@ -11,9 +11,11 @@ import numpy as np
 
 _FRAMES_PER_CLIP = 40
 _LABELS_NAME = "labels.json"
+_GEMINI_SUFFIX = "-orig.png"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_RECORDINGS_DIR = _REPO_ROOT / "data" / "recordings"
 DEFAULT_FRAMES_DIR = _REPO_ROOT / "data" / "frames"
+DEFAULT_GEMINI_DIR = _REPO_ROOT / "data" / "gemini"
 
 
 @dataclass
@@ -74,16 +76,43 @@ def scan_recordings(recordings_dir: Path) -> list[Recording]:
     return recordings
 
 
-def extract(recordings_dir: Path, frames_dir: Path) -> list[Frame]:
+def scan_gemini(gemini_dir: Path) -> list[Recording]:
+    if not gemini_dir.is_dir():
+        return []
+    recordings: list[Recording] = []
+    for media_path in sorted(gemini_dir.glob(f"*{_GEMINI_SUFFIX}")):
+        stem = media_path.name.removesuffix(_GEMINI_SUFFIX)
+        sidecar_path = gemini_dir / f"{stem}.json"
+        if not sidecar_path.is_file():
+            continue
+        recordings.append(
+            Recording(
+                stem=stem,
+                kind="gemini",
+                media_path=media_path,
+                sidecar_path=sidecar_path,
+            )
+        )
+    return recordings
+
+
+def extract(recordings_dir: Path, frames_dir: Path, gemini_dir: Path | None = None) -> list[Frame]:
     frames_dir.mkdir(parents=True, exist_ok=True)
     labels = _load_labels(frames_dir)
-    for recording in scan_recordings(recordings_dir):
+    recordings = scan_recordings(recordings_dir)
+    if gemini_dir is not None:
+        recordings += scan_gemini(gemini_dir)
+    for recording in recordings:
         if recording.stem in labels.extracted:
             continue
-        sidecar = _parse_sidecar(recording.sidecar_path)
+        sidecar = _parse_sidecar(
+            recording.sidecar_path, "gemini" if recording.kind == "gemini" else None
+        )
         corners_px = sidecar.corners * np.array([float(sidecar.width), float(sidecar.height)])
         if recording.kind == "snap":
             _extract_snap(recording, frames_dir, corners_px, labels)
+        elif recording.kind == "gemini":
+            _extract_gemini(recording, frames_dir, corners_px, labels)
         else:
             _extract_clip(recording, frames_dir, corners_px, labels)
         labels.extracted[recording.stem] = sum(
@@ -124,6 +153,24 @@ def _extract_snap(
     )
 
 
+def _extract_gemini(
+    recording: Recording,
+    frames_dir: Path,
+    corners_px: np.ndarray,
+    labels: Labels,
+) -> None:
+    image = cv2.imread(str(recording.media_path))
+    if image is None:
+        raise ValueError(f"cannot read snapshot {recording.media_path}")
+    name = f"{recording.stem}{_GEMINI_SUFFIX}"
+    shutil.copyfile(recording.media_path, frames_dir / name)
+    labels.frames[name] = FrameEntry(
+        corners_px=corners_px,
+        source_stem=recording.stem,
+        kind="gemini",
+    )
+
+
 def _extract_clip(
     recording: Recording,
     frames_dir: Path,
@@ -155,11 +202,11 @@ def _extract_clip(
         capture.release()
 
 
-def _parse_sidecar(path: Path) -> Sidecar:
+def _parse_sidecar(path: Path, default_kind: str | None = None) -> Sidecar:
     data = json.loads(path.read_text())
     if not isinstance(data, dict):
         raise ValueError(f"sidecar {path} is not a json object")
-    kind = data.get("kind")
+    kind = data.get("kind", default_kind)
     width = data.get("imageWidth")
     height = data.get("imageHeight")
     corners = data.get("corners")
@@ -243,8 +290,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="extract labeled frames from recordings")
     parser.add_argument("--recordings-dir", type=Path, default=DEFAULT_RECORDINGS_DIR)
     parser.add_argument("--frames-dir", type=Path, default=DEFAULT_FRAMES_DIR)
+    parser.add_argument("--gemini-dir", type=Path, default=DEFAULT_GEMINI_DIR)
     args = parser.parse_args()
-    frames = extract(args.recordings_dir, args.frames_dir)
+    frames = extract(args.recordings_dir, args.frames_dir, args.gemini_dir)
     print(f"{len(frames)} frames in {args.frames_dir}")
 
 

@@ -75,12 +75,14 @@ def _train_epoch(
     seen = 0
     for inputs, corners, present in _iter_batches(pool, seed, epoch, train_samples, batch_size):
         optimizer.zero_grad()
+        corner_tensor = torch.from_numpy(corners)
         pred_heatmaps, present_logits = model(torch.from_numpy(inputs).unsqueeze(1))
         loss = corner_loss(
             pred_heatmaps,
             present_logits,
-            heatmap_targets(torch.from_numpy(corners), torch.from_numpy(present)),
+            heatmap_targets(corner_tensor, torch.from_numpy(present)),
             torch.from_numpy(present),
+            corner_tensor,
         )
         loss.backward()
         optimizer.step()

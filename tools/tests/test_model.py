@@ -62,15 +62,19 @@ def test_heatmap_targets_peak_at_clamped_corner_and_zero_when_absent() -> None:
     assert (x, y) == (0, 71)
     y, x = divmod(int(targets[0, 2].argmax()), 72)
     assert (x, y) == (71, 0)
-    decoded = decode_heatmaps(targets)
-    assert torch.allclose(decoded[0, 2:4], corners[0, 2:4], atol=0.005)
-    assert torch.allclose(decoded[0, 6:8], corners[0, 6:8], atol=0.005)
-    assert torch.allclose(decoded[0], corners[0], atol=0.02)
 
 
 def test_decode_heatmaps_falls_back_to_center_when_map_is_empty() -> None:
     decoded = decode_heatmaps(torch.zeros(2, 4, 72, 72))
     assert torch.allclose(decoded, torch.full((2, 8), 0.5))
+
+
+def test_decode_heatmaps_peaks_at_logit_maximum() -> None:
+    heatmaps = torch.full((1, 4, 72, 72), -1e4)
+    heatmaps[:, :, 20, 30] = 1e4
+    decoded = decode_heatmaps(heatmaps)
+    peak = torch.tensor([30.0 / 71.0, 20.0 / 71.0]).repeat(4)
+    assert torch.allclose(decoded[0], peak, atol=1e-5)
 
 
 def test_corner_loss_decreases_over_training_steps() -> None:
@@ -79,17 +83,36 @@ def test_corner_loss_decreases_over_training_steps() -> None:
     model = KeybedNet()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     tensor = torch.from_numpy(inputs).unsqueeze(1)
-    target = heatmap_targets(torch.from_numpy(corners), torch.from_numpy(present))
+    corner_tensor = torch.from_numpy(corners)
     flags = torch.from_numpy(present)
+    target = heatmap_targets(corner_tensor, flags)
     losses = []
     for _ in range(30):
         optimizer.zero_grad()
         pred_heatmaps, present_logits = model(tensor)
-        loss = corner_loss(pred_heatmaps, present_logits, target, flags)
+        loss = corner_loss(pred_heatmaps, present_logits, target, flags, corner_tensor)
         loss.backward()
         optimizer.step()
         losses.append(float(loss.detach()))
     assert losses[-1] < losses[0]
+
+
+def test_corner_loss_backpropagates_to_head_conv_weights() -> None:
+    inputs, corners, _ = _fixed_batch(4)
+    torch.manual_seed(0)
+    model = KeybedNet()
+    corner_tensor = torch.from_numpy(corners)
+    pred_heatmaps, present_logits = model(torch.from_numpy(inputs).unsqueeze(1))
+    loss = corner_loss(
+        pred_heatmaps,
+        present_logits,
+        heatmap_targets(corner_tensor, torch.ones(4)),
+        torch.ones(4),
+        corner_tensor,
+    )
+    loss.backward()
+    assert model.heatmap_head[0].weight.grad is not None
+    assert model.heatmap_head[-1].weight.grad is not None
 
 
 def test_predict_corners_scales_back_to_frame() -> None:

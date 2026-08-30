@@ -47,16 +47,10 @@ class KeybedNet(nn.Module):
 
 def decode_heatmaps(heatmaps: torch.Tensor) -> torch.Tensor:
     height, width = heatmaps.shape[-2:]
-    flat = heatmaps.flatten(2).clamp(min=0.0)
-    total = flat.sum(dim=-1, keepdim=True)
-    weights = flat / total.clamp(min=torch.finfo(flat.dtype).tiny)
+    weights = torch.softmax(heatmaps.flatten(2), dim=-1)
     xs = torch.arange(width, dtype=heatmaps.dtype, device=heatmaps.device).repeat(height)
     ys = torch.arange(height, dtype=heatmaps.dtype, device=heatmaps.device).repeat_interleave(width)
     expected = torch.stack((weights @ xs, weights @ ys), dim=-1)
-    center = torch.tensor(
-        ((width - 1) / 2.0, (height - 1) / 2.0), dtype=heatmaps.dtype, device=heatmaps.device
-    )
-    expected = torch.where(total <= 0.0, center, expected)
     return expected.flatten(1) / float(width - 1)
 
 
@@ -78,14 +72,22 @@ def corner_loss(
     present_logits: torch.Tensor,
     target_heatmaps: torch.Tensor,
     present: torch.Tensor,
+    corners: torch.Tensor,
 ) -> torch.Tensor:
     mask = present.to(pred_heatmaps.dtype)
-    target = target_heatmaps.to(pred_heatmaps.dtype)
     denominator = mask.sum().clamp(min=1.0)
-    per_sample = ((pred_heatmaps - target) ** 2).flatten(1).mean(dim=1)
+    decoded = decode_heatmaps(pred_heatmaps)
+    per_sample = F.smooth_l1_loss(
+        decoded, corners.to(decoded.dtype), beta=0.01, reduction="none"
+    ).mean(dim=1)
     corner_term = (per_sample * mask).sum() / denominator
     presence_term = F.binary_cross_entropy_with_logits(present_logits, mask)
-    return corner_term + presence_term
+    log_distribution = torch.log_softmax(pred_heatmaps.flatten(2), dim=-1)
+    tiny = torch.finfo(pred_heatmaps.dtype).tiny
+    log_target = torch.log(target_heatmaps.flatten(2).to(pred_heatmaps.dtype).clamp_min(tiny))
+    kl = (log_distribution.exp() * (log_distribution - log_target)).sum(dim=-1)
+    kl_term = (kl.sum(dim=-1) * mask).sum() / denominator
+    return corner_term + presence_term + 0.01 * kl_term
 
 
 def preprocess(image_rgb: np.ndarray) -> np.ndarray:

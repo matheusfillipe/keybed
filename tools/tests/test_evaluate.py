@@ -150,6 +150,8 @@ def test_dataset_main_with_explicit_dirs(tmp_path: Path) -> None:
         str(recordings_dir),
         "--frames-dir",
         str(frames_dir),
+        "--gemini-dir",
+        str(tmp_path / "gemini"),
     ]
     with patch.object(sys, "argv", argv):
         dataset_main()
