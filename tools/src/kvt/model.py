@@ -47,12 +47,17 @@ class KeybedNet(nn.Module):
 
 def decode_heatmaps(heatmaps: torch.Tensor) -> torch.Tensor:
     height, width = heatmaps.shape[-2:]
-    flat = torch.softmax(heatmaps.flatten(2), dim=-1)
+    flat = heatmaps.flatten(2).clamp(min=0.0)
+    total = flat.sum(dim=-1, keepdim=True)
+    weights = flat / total.clamp(min=torch.finfo(flat.dtype).tiny)
     xs = torch.arange(width, dtype=heatmaps.dtype, device=heatmaps.device).repeat(height)
     ys = torch.arange(height, dtype=heatmaps.dtype, device=heatmaps.device).repeat_interleave(width)
-    expected_x = flat @ xs
-    expected_y = flat @ ys
-    return torch.stack((expected_x, expected_y), dim=-1).flatten(1) / float(width - 1)
+    expected = torch.stack((weights @ xs, weights @ ys), dim=-1)
+    center = torch.tensor(
+        ((width - 1) / 2.0, (height - 1) / 2.0), dtype=heatmaps.dtype, device=heatmaps.device
+    )
+    expected = torch.where(total <= 0.0, center, expected)
+    return expected.flatten(1) / float(width - 1)
 
 
 def heatmap_targets(corners: torch.Tensor, present: torch.Tensor) -> torch.Tensor:

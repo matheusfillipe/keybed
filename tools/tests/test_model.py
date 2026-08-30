@@ -62,8 +62,15 @@ def test_heatmap_targets_peak_at_clamped_corner_and_zero_when_absent() -> None:
     assert (x, y) == (0, 71)
     y, x = divmod(int(targets[0, 2].argmax()), 72)
     assert (x, y) == (71, 0)
-    decoded = decode_heatmaps(targets * 30.0)
-    assert torch.allclose(decoded[0], corners[0], atol=0.01)
+    decoded = decode_heatmaps(targets)
+    assert torch.allclose(decoded[0, 2:4], corners[0, 2:4], atol=0.005)
+    assert torch.allclose(decoded[0, 6:8], corners[0, 6:8], atol=0.005)
+    assert torch.allclose(decoded[0], corners[0], atol=0.02)
+
+
+def test_decode_heatmaps_falls_back_to_center_when_map_is_empty() -> None:
+    decoded = decode_heatmaps(torch.zeros(2, 4, 72, 72))
+    assert torch.allclose(decoded, torch.full((2, 8), 0.5))
 
 
 def test_corner_loss_decreases_over_training_steps() -> None:
