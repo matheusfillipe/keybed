@@ -12,6 +12,7 @@ import numpy as np
 from kvt.dataset import Frame, load_frames
 from kvt.detect import Detection, find_keybed, find_keybed_pattern
 from kvt.model import KeybedNet, load_model, predict_corners
+from kvt.refine import refine_quad
 
 Method = Literal["v0", "pattern", "net"]
 Detector = Callable[[np.ndarray], Detection | None]
@@ -57,10 +58,20 @@ class FrameResult:
     locked: bool
     success: bool
     mean_error_px: float | None
+    pre_error_px: float | None = None
+
+
+def _mean_error(quad_px: np.ndarray, corners_px: np.ndarray | None) -> float | None:
+    if corners_px is None:
+        return None
+    return float(np.linalg.norm(quad_px - corners_px, axis=1).mean())
 
 
 def evaluate_frame(
-    frame: Frame, method: Method = "pattern", detector: Detector | None = None
+    frame: Frame,
+    method: Method = "pattern",
+    detector: Detector | None = None,
+    refine: bool = True,
 ) -> FrameResult:
     image = cv2.imread(str(frame.image_path))
     if image is None:
@@ -76,32 +87,42 @@ def evaluate_frame(
             locked=False,
             success=False,
             mean_error_px=None,
+            pre_error_px=None,
         )
+    quad_px = detection.quad_px
+    pre_error_px: float | None = None
+    if method == "net" and refine:
+        pre_error_px = _mean_error(quad_px, frame.corners_px)
+        quad_px = refine_quad(image, quad_px)
     if frame.corners_px is None:
         return FrameResult(
             source_stem=frame.source_stem,
             kind=frame.kind,
-            quad_px=detection.quad_px,
+            quad_px=quad_px,
             locked=True,
             success=False,
             mean_error_px=None,
+            pre_error_px=pre_error_px,
         )
-    errors = np.linalg.norm(detection.quad_px - frame.corners_px, axis=1)
+    errors = np.linalg.norm(quad_px - frame.corners_px, axis=1)
     return FrameResult(
         source_stem=frame.source_stem,
         kind=frame.kind,
-        quad_px=detection.quad_px,
+        quad_px=quad_px,
         locked=True,
         success=bool(float(errors.max()) <= _SUCCESS_RADIUS_PX),
         mean_error_px=float(errors.mean()),
+        pre_error_px=pre_error_px,
     )
 
 
-def run(frames_dir: Path, out_dir: Path, method: Method = "pattern") -> list[FrameResult]:
+def run(
+    frames_dir: Path, out_dir: Path, method: Method = "pattern", refine: bool = True
+) -> list[FrameResult]:
     frames = load_frames(frames_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     detector = _detector_for(method)
-    results = [evaluate_frame(frame, method, detector) for frame in frames]
+    results = [evaluate_frame(frame, method, detector, refine) for frame in frames]
     for frame, result in zip(frames, results, strict=True):
         _write_preview(frame, result, out_dir)
     _print_table(results)
@@ -169,6 +190,13 @@ def _print_table(results: list[FrameResult]) -> None:
         stats = by_kind[kind]
         print(_format_row(f"{kind} (all)", kind, stats))
     print(_format_row(overall.label, overall.kind, overall))
+    deltas = [
+        result.pre_error_px - result.mean_error_px
+        for result in results
+        if result.pre_error_px is not None and result.mean_error_px is not None
+    ]
+    delta = f"{sum(deltas) / len(deltas):.1f}" if deltas else "-"
+    print(f"mean refinement delta px: {delta}")
 
 
 def _format_row(label: str, kind: str, stats: _GroupStats) -> str:
@@ -198,9 +226,10 @@ def main() -> None:
     parser.add_argument("--frames-dir", type=Path, default=DEFAULT_FRAMES_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--method", choices=("v0", "pattern", "net"), default=None)
+    parser.add_argument("--no-refine", action="store_true")
     args = parser.parse_args()
     method = cast(Method, args.method) if args.method is not None else default_method()
-    run(args.frames_dir, args.out_dir, method)
+    run(args.frames_dir, args.out_dir, method, refine=not args.no_refine)
 
 
 if __name__ == "__main__":

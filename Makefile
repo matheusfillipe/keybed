@@ -3,9 +3,9 @@ UV := uv run --project tools
 
 .DEFAULT_GOAL := help
 .PHONY: help install fix precommit check list-lab-data lab-extract lab-train lab-detect \
-        tools-fix tools-format-check tools-lint tools-typecheck tools-test tools-coverage \
-        tools-dead-code tools-unused-deps tools-security tools-audit build \
-        web-typecheck web-lint web-fix web-test web-build dev clean
+        lab-detect-no-refine tools-fix tools-format-check tools-lint tools-typecheck \
+        tools-test tools-coverage tools-dead-code tools-unused-deps tools-security tools-audit \
+        build web-typecheck web-lint web-fix web-test web-build dev clean
 
 help: ## list available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
@@ -89,6 +89,9 @@ lab-train: ## train the keybed corner detector on synthetic renders (data/models
 
 lab-detect: lab-extract ## run keybed detector evaluation on extracted frames
 	cd tools && uv run python -m kvt.evaluate
+
+lab-detect-no-refine: lab-extract ## run keybed detector evaluation without corner refinement
+	cd tools && uv run python -m kvt.evaluate --no-refine
 
 clean: ## remove local caches and build artifacts
 	rm -rf tools/.ruff_cache tools/.mypy_cache tools/.pytest_cache tools/.coverage tools/.coverage.* tools/.vulture web/dist
