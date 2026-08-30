@@ -71,7 +71,7 @@ def evaluate_frame(
     frame: Frame,
     method: Method = "pattern",
     detector: Detector | None = None,
-    refine: bool = True,
+    refine: bool = False,
 ) -> FrameResult:
     image = cv2.imread(str(frame.image_path))
     if image is None:
@@ -117,7 +117,7 @@ def evaluate_frame(
 
 
 def run(
-    frames_dir: Path, out_dir: Path, method: Method = "pattern", refine: bool = True
+    frames_dir: Path, out_dir: Path, method: Method = "pattern", refine: bool = False
 ) -> list[FrameResult]:
     frames = load_frames(frames_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -226,10 +226,10 @@ def main() -> None:
     parser.add_argument("--frames-dir", type=Path, default=DEFAULT_FRAMES_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--method", choices=("v0", "pattern", "net"), default=None)
-    parser.add_argument("--no-refine", action="store_true")
+    parser.add_argument("--refine", action="store_true")
     args = parser.parse_args()
     method = cast(Method, args.method) if args.method is not None else default_method()
-    run(args.frames_dir, args.out_dir, method, refine=not args.no_refine)
+    run(args.frames_dir, args.out_dir, method, refine=args.refine)
 
 
 if __name__ == "__main__":

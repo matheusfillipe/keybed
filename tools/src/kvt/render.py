@@ -7,6 +7,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from kvt.dataset import DEFAULT_FRAMES_DIR, load_frames
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _RECORDINGS_DIR = _REPO_ROOT / "data" / "recordings"
 
@@ -18,6 +20,10 @@ _BLACK_DEPTH_FRACTION = 0.6
 _PIXELS_PER_UNIT = 20.0
 
 _ABSENT_PROBABILITY = 0.1
+_REAL_BACKGROUND_PROBABILITY = 0.7
+_REAL_NEGATIVE_PROBABILITY = 0.5
+_INPAINT_RADIUS = 6
+_INPAINT_MARGIN_PX = 8
 _SCALE_RANGE = (0.6, 1.4)
 _MIN_VISIBLE_SPAN = 0.7
 _JITTER_FRACTION = 0.06
@@ -86,14 +92,35 @@ def _load_quads(recordings_dir: Path) -> np.ndarray:
 _BASE_QUADS = _load_quads(_RECORDINGS_DIR)
 
 
-def render_sample(rng: np.random.Generator, width: int = 640, height: int = 480) -> RenderSample:
-    quad = _sample_quad(rng, width, height)
+def render_sample(
+    rng: np.random.Generator,
+    width: int = 640,
+    height: int = 480,
+    background: np.ndarray | None = None,
+    quad_px: np.ndarray | None = None,
+) -> RenderSample:
+    if background is not None and quad_px is not None:
+        return _render_with_background(rng, background, quad_px, width, height)
     present = bool(rng.random() >= _ABSENT_PROBABILITY)
+    real_probability = _REAL_BACKGROUND_PROBABILITY if present else _REAL_NEGATIVE_PROBABILITY
+    sampled = (
+        _sample_real_background(rng, width, height) if rng.random() < real_probability else None
+    )
+    if sampled is not None:
+        real_background, real_quad = sampled
+        return _render_with_background(rng, real_background, real_quad, width, height, present)
+    quad = _sample_quad(rng, width, height)
     canvas = _render_background(rng, width, height)
     if present:
         _draw_keybed(canvas, quad, rng)
         _maybe_add_glare(canvas, rng)
         _maybe_add_occluders(canvas, quad, rng)
+    return _finalize(canvas, quad, present, rng)
+
+
+def _finalize(
+    canvas: np.ndarray, quad: np.ndarray, present: bool, rng: np.random.Generator
+) -> RenderSample:
     sigma = float(rng.uniform(*_NOISE_SIGMA_RANGE))
     noisy = canvas + rng.normal(0.0, sigma, canvas.shape)
     return RenderSample(
@@ -103,10 +130,90 @@ def render_sample(rng: np.random.Generator, width: int = 640, height: int = 480)
     )
 
 
+_REAL_FRAMES: list[tuple[Path, np.ndarray]] | None = None
+
+
+def _real_frames() -> list[tuple[Path, np.ndarray]]:
+    global _REAL_FRAMES
+    if _REAL_FRAMES is None:
+        _REAL_FRAMES = [
+            (frame.image_path, frame.corners_px)
+            for frame in load_frames(DEFAULT_FRAMES_DIR)
+            if frame.kind == "rec" and frame.corners_px is not None
+        ]
+    return _REAL_FRAMES
+
+
+def _sample_real_background(
+    rng: np.random.Generator, width: int, height: int
+) -> tuple[np.ndarray, np.ndarray] | None:
+    frames = _real_frames()
+    if not frames:
+        return None
+    image_path, quad = frames[int(rng.integers(0, len(frames)))]
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return None
+    background = np.asarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), dtype=np.float32)
+    return background, quad.astype(np.float64)
+
+
+def _render_with_background(
+    rng: np.random.Generator,
+    background: np.ndarray,
+    quad_px: np.ndarray,
+    width: int,
+    height: int,
+    present: bool | None = None,
+) -> RenderSample:
+    image = np.asarray(background, dtype=np.float32).copy()
+    source_height, source_width = image.shape[:2]
+    base = quad_px.astype(np.float64)
+    if (source_width, source_height) != (width, height):
+        image = np.asarray(
+            cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA), dtype=np.float32
+        )
+        base = base * np.array([width / source_width, height / source_height])
+    canvas = _inpaint_quad(image, base)
+    if present is None:
+        present = bool(rng.random() >= _ABSENT_PROBABILITY)
+    quad = _perturb_quad(rng, base, width, height)
+    if present:
+        _draw_keybed(canvas, quad, rng)
+        _maybe_add_glare(canvas, rng)
+        _maybe_add_occluders(canvas, quad, rng)
+    return _finalize(canvas, quad, present, rng)
+
+
+def _inpaint_quad(image: np.ndarray, quad_px: np.ndarray) -> np.ndarray:
+    height, width = image.shape[:2]
+    x0 = max(int(np.floor(quad_px[:, 0].min())) - _INPAINT_MARGIN_PX, 0)
+    y0 = max(int(np.floor(quad_px[:, 1].min())) - _INPAINT_MARGIN_PX, 0)
+    x1 = min(int(np.ceil(quad_px[:, 0].max())) + _INPAINT_MARGIN_PX, width)
+    y1 = min(int(np.ceil(quad_px[:, 1].max())) + _INPAINT_MARGIN_PX, height)
+    if x1 <= x0 or y1 <= y0:
+        return image
+    crop = image[y0:y1, x0:x1]
+    mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+    offset = np.array([float(x0), float(y0)])
+    cv2.fillPoly(mask, [(quad_px - offset).astype(np.int32)], 255)
+    inpainted = cv2.inpaint(
+        np.clip(crop, 0.0, 255.0).astype(np.uint8), mask, _INPAINT_RADIUS, cv2.INPAINT_TELEA
+    )
+    image[y0:y1, x0:x1] = np.asarray(inpainted, dtype=np.float32)
+    return image
+
+
 def _sample_quad(rng: np.random.Generator, width: int, height: int) -> np.ndarray:
     base = _BASE_QUADS[int(rng.integers(0, len(_BASE_QUADS)))] * np.array(
         [float(width), float(height)]
     )
+    return _perturb_quad(rng, base, width, height)
+
+
+def _perturb_quad(
+    rng: np.random.Generator, base: np.ndarray, width: int, height: int
+) -> np.ndarray:
     centroid = base.mean(axis=0)
     scale = float(rng.uniform(*_SCALE_RANGE))
     quad = centroid + (base - centroid) * scale

@@ -6,9 +6,11 @@ from collections.abc import Iterator
 from multiprocessing.pool import Pool
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 
+from kvt.dataset import DEFAULT_FRAMES_DIR, Frame, load_frames
 from kvt.model import KeybedNet, corner_loss, decode_heatmaps, heatmap_targets, preprocess
 from kvt.render import render_sample
 
@@ -22,6 +24,9 @@ _DEFAULT_EPOCHS = 6
 _BATCH_SIZE = 64
 _LEARNING_RATE = 1e-3
 _MIN_LEARNING_RATE = 1e-5
+_FINE_TUNE_STEPS = 400
+_FINE_TUNE_LEARNING_RATE = 1e-4
+_FINE_TUNE_SEED_OFFSET = 1_000_000
 _SEED = 0
 _RENDER_WORKERS = 4
 _CHUNK_SIZE = 8
@@ -127,6 +132,56 @@ def _evaluate(
     return mae, correct / max(seen, 1), predicted_std, target_std
 
 
+def _fine_tune_items(frames: list[Frame]) -> tuple[np.ndarray, np.ndarray] | None:
+    inputs: list[np.ndarray] = []
+    corners: list[np.ndarray] = []
+    for frame in frames:
+        if frame.kind != "rec" or frame.corners_px is None:
+            continue
+        image = cv2.imread(str(frame.image_path))
+        if image is None:
+            raise ValueError(f"cannot read frame {frame.image_path}")
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        scale = np.array([1.0 / float(image.shape[1]), 1.0 / float(image.shape[0])])
+        inputs.append(preprocess(rgb))
+        corners.append((frame.corners_px * scale).reshape(8))
+    if not inputs:
+        return None
+    return np.stack(inputs), np.stack(corners)
+
+
+def _fine_tune(
+    model: KeybedNet,
+    items: tuple[np.ndarray, np.ndarray],
+    pool: Pool | None,
+    val_samples: int,
+    batch_size: int,
+    seed: int,
+    steps: int,
+) -> float:
+    inputs, corners = items
+    rng = np.random.default_rng([seed, _FINE_TUNE_SEED_OFFSET])
+    optimizer = torch.optim.Adam(model.parameters(), lr=_FINE_TUNE_LEARNING_RATE)
+    model.train()
+    for _ in range(steps):
+        pick = rng.integers(0, inputs.shape[0], size=batch_size)
+        corner_tensor = torch.from_numpy(corners[pick])
+        present = torch.ones(batch_size)
+        optimizer.zero_grad()
+        pred_heatmaps, present_logits = model(torch.from_numpy(inputs[pick]).unsqueeze(1))
+        loss = corner_loss(
+            pred_heatmaps,
+            present_logits,
+            heatmap_targets(corner_tensor, present),
+            present,
+            corner_tensor,
+        )
+        loss.backward()
+        optimizer.step()
+    mae, _, _, _ = _evaluate(model, pool, val_samples, batch_size, seed)
+    return mae
+
+
 def train_model(
     train_samples: int,
     val_samples: int,
@@ -134,6 +189,8 @@ def train_model(
     batch_size: int = _BATCH_SIZE,
     seed: int = _SEED,
     workers: int = _RENDER_WORKERS,
+    frames_dir: Path = DEFAULT_FRAMES_DIR,
+    fine_tune_steps: int = _FINE_TUNE_STEPS,
 ) -> tuple[KeybedNet, float]:
     torch.manual_seed(seed)
     model = KeybedNet()
@@ -164,18 +221,35 @@ def train_model(
                 best_state = {
                     name: tensor.detach().clone() for name, tensor in model.state_dict().items()
                 }
+        final_mae = best_mae
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        items = _fine_tune_items(load_frames(frames_dir))
+        if items is not None and fine_tune_steps > 0:
+            before, _, _, _ = _evaluate(model, pool, val_samples, batch_size, seed)
+            print(
+                f"fine-tune {items[0].shape[0]} real rec frames, "
+                f"{fine_tune_steps} steps @ lr {_FINE_TUNE_LEARNING_RATE}",
+                flush=True,
+            )
+            final_mae = _fine_tune(
+                model, items, pool, val_samples, batch_size, seed, fine_tune_steps
+            )
+            print(
+                f"fine-tune val_mae_px before {before:.2f} after {final_mae:.2f}",
+                flush=True,
+            )
     finally:
         if pool is not None:
             pool.close()
             pool.join()
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    return model, best_mae
+    return model, final_mae
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="train the keybed corner detector on synthetic renders"
+        description="train the keybed corner detector on synthetic renders, "
+        "then fine-tune on real rec frames"
     )
     parser.add_argument("--train-samples", type=int, default=_DEFAULT_TRAIN_SAMPLES)
     parser.add_argument("--val-samples", type=int, default=_DEFAULT_VAL_SAMPLES)

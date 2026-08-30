@@ -9,6 +9,7 @@ import pytest
 
 from kvt.dataset import Frame, extract
 from kvt.dataset import main as dataset_main
+from kvt.detect import Detection
 from kvt.evaluate import evaluate_frame, main, net_detector, run
 from kvt.model import KeybedNet
 from kvt.render import render_sample
@@ -136,6 +137,24 @@ def test_evaluate_frame_raises_on_unreadable_image(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="cannot read frame"):
         evaluate_frame(frame)
+
+
+def test_evaluate_frame_net_refine_opt_in(tmp_path: Path) -> None:
+    frames_dir = tmp_path / "frames"
+    _make_frames(frames_dir)
+    x0, y0, x1, y1 = KEYBED
+    corners_px = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
+    frame = Frame(
+        image_path=frames_dir / "snap-eval.png",
+        corners_px=corners_px,
+        source_stem="snap-eval",
+        kind="snap",
+    )
+    detection = Detection(quad_px=corners_px.copy(), confidence=1.0)
+    refined = evaluate_frame(frame, "net", lambda _image: detection, refine=True)
+    assert refined.pre_error_px is not None
+    plain = evaluate_frame(frame, "net", lambda _image: detection)
+    assert plain.pre_error_px is None
 
 
 def test_dataset_main_with_explicit_dirs(tmp_path: Path) -> None:
