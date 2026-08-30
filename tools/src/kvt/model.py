@@ -1,4 +1,4 @@
-"""KeybedNet: quad regression over grayscale input."""
+"""KeybedNet: per-corner heatmap detection over grayscale input."""
 
 from pathlib import Path
 
@@ -9,7 +9,8 @@ from torch import nn
 from torch.nn import functional as F
 
 INPUT_SIZE = 288
-_SMOOTH_L1_BETA = 0.01
+HEATMAP_SIZE = 72
+_GAUSSIAN_SIGMA = 1.5
 
 
 class KeybedNet(nn.Module):
@@ -29,34 +30,56 @@ class KeybedNet(nn.Module):
             nn.GroupNorm(8, 96),
             nn.ReLU(),
         )
-        self.head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(6), nn.Flatten(), nn.Linear(96 * 6 * 6, 256), nn.ReLU()
+        self.heatmap_head = nn.Sequential(
+            nn.ConvTranspose2d(96, 64, 4, stride=2, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 4, 1),
         )
-        self.corners_head = nn.Linear(256, 8)
-        self.present_head = nn.Linear(256, 1)
+        self.present_head = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(96, 1))
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.head(self.body(x))
-        return torch.sigmoid(self.corners_head(features)), self.present_head(features).squeeze(-1)
+        features = self.body(x)
+        return self.heatmap_head(features), self.present_head(features).squeeze(-1)
+
+
+def decode_heatmaps(heatmaps: torch.Tensor) -> torch.Tensor:
+    height, width = heatmaps.shape[-2:]
+    flat = torch.softmax(heatmaps.flatten(2), dim=-1)
+    xs = torch.arange(width, dtype=heatmaps.dtype, device=heatmaps.device).repeat(height)
+    ys = torch.arange(height, dtype=heatmaps.dtype, device=heatmaps.device).repeat_interleave(width)
+    expected_x = flat @ xs
+    expected_y = flat @ ys
+    return torch.stack((expected_x, expected_y), dim=-1).flatten(1) / float(width - 1)
+
+
+def heatmap_targets(corners: torch.Tensor, present: torch.Tensor) -> torch.Tensor:
+    batch = corners.shape[0]
+    positions = corners.view(batch, 4, 2) * float(HEATMAP_SIZE - 1)
+    positions = positions.clamp(0.0, float(HEATMAP_SIZE - 1))
+    xs = torch.arange(HEATMAP_SIZE, dtype=corners.dtype, device=corners.device)
+    ys = torch.arange(HEATMAP_SIZE, dtype=corners.dtype, device=corners.device)
+    squared = (positions[:, :, 0, None, None] - xs[None, None, None, :]) ** 2 + (
+        positions[:, :, 1, None, None] - ys[None, None, :, None]
+    ) ** 2
+    blobs = torch.exp(-squared / (2.0 * _GAUSSIAN_SIGMA**2))
+    return blobs * present.to(corners.dtype).view(-1, 1, 1, 1)
 
 
 def corner_loss(
-    pred_corners: torch.Tensor,
+    pred_heatmaps: torch.Tensor,
     present_logits: torch.Tensor,
-    target_corners: torch.Tensor,
+    target_heatmaps: torch.Tensor,
     present: torch.Tensor,
 ) -> torch.Tensor:
-    mask = present.to(pred_corners.dtype).unsqueeze(1)
-    denominator = (mask.sum() * pred_corners.shape[1]).clamp(min=1.0)
-    corner_term = (
-        F.smooth_l1_loss(
-            pred_corners * mask, target_corners * mask, reduction="sum", beta=_SMOOTH_L1_BETA
-        )
-        / denominator
-    )
-    presence_term = F.binary_cross_entropy_with_logits(
-        present_logits, present.to(pred_corners.dtype)
-    )
+    mask = present.to(pred_heatmaps.dtype)
+    target = target_heatmaps.to(pred_heatmaps.dtype)
+    denominator = mask.sum().clamp(min=1.0)
+    per_sample = ((pred_heatmaps - target) ** 2).flatten(1).mean(dim=1)
+    corner_term = (per_sample * mask).sum() / denominator
+    presence_term = F.binary_cross_entropy_with_logits(present_logits, mask)
     return corner_term + presence_term
 
 
@@ -72,7 +95,8 @@ def predict_corners(model: KeybedNet, image_rgb: np.ndarray) -> tuple[np.ndarray
     tensor = torch.from_numpy(preprocess(image_rgb)).unsqueeze(0).unsqueeze(0)
     model.eval()
     with torch.no_grad():
-        corners, present_logits = model(tensor)
+        heatmaps, present_logits = model(tensor)
+        corners = decode_heatmaps(heatmaps)
     probability = float(torch.sigmoid(present_logits)[0])
     height, width = image_rgb.shape[:2]
     quad = corners[0].numpy().astype(np.float64).reshape(4, 2)

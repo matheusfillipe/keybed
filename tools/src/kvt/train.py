@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from kvt.model import KeybedNet, corner_loss, preprocess
+from kvt.model import KeybedNet, corner_loss, decode_heatmaps, heatmap_targets, preprocess
 from kvt.render import render_sample
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -75,11 +75,11 @@ def _train_epoch(
     seen = 0
     for inputs, corners, present in _iter_batches(pool, seed, epoch, train_samples, batch_size):
         optimizer.zero_grad()
-        pred_corners, present_logits = model(torch.from_numpy(inputs).unsqueeze(1))
+        pred_heatmaps, present_logits = model(torch.from_numpy(inputs).unsqueeze(1))
         loss = corner_loss(
-            pred_corners,
+            pred_heatmaps,
             present_logits,
-            torch.from_numpy(corners),
+            heatmap_targets(torch.from_numpy(corners), torch.from_numpy(present)),
             torch.from_numpy(present),
         )
         loss.backward()
@@ -103,9 +103,9 @@ def _evaluate(
     target_all: list[np.ndarray] = []
     with torch.no_grad():
         for inputs, corners, present in _iter_batches(pool, seed + 1, 0, val_samples, batch_size):
-            pred_corners, present_logits = model(torch.from_numpy(inputs).unsqueeze(1))
+            pred_heatmaps, present_logits = model(torch.from_numpy(inputs).unsqueeze(1))
             probabilities = torch.sigmoid(present_logits).numpy()
-            predicted = pred_corners.numpy().reshape(-1, 4, 2)
+            predicted = decode_heatmaps(pred_heatmaps).numpy().reshape(-1, 4, 2)
             target = corners.reshape(-1, 4, 2)
             flags = present.astype(bool)
             if flags.any():
