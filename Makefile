@@ -3,7 +3,7 @@ UV := uv run --project tools
 
 .DEFAULT_GOAL := help
 .PHONY: help install fix precommit check list-lab-data lab-extract lab-train lab-detect \
-        lab-detect-no-refine tools-fix tools-format-check tools-lint tools-typecheck \
+        tools-fix tools-format-check tools-lint tools-typecheck \
         tools-test tools-coverage tools-dead-code tools-unused-deps tools-security tools-audit \
         build web-typecheck web-lint web-fix web-test web-build dev clean
 
@@ -84,14 +84,11 @@ list-lab-data: ## list saved lab recordings (data/recordings)
 lab-extract: ## extract labeled frames from recordings (data/recordings -> data/frames)
 	cd tools && uv run python -m kvt.dataset
 
-lab-train: ## train the keybed corner detector on synthetic renders (data/models/keybed_net.pt)
+lab-train: ## train detector on synthetic renders then fine-tune on real rec frames (data/models/keybed_net.pt)
 	cd tools && uv run python -m kvt.train
 
-lab-detect: lab-extract ## run keybed detector evaluation on extracted frames
+lab-detect: lab-extract ## evaluate keybed detector on extracted frames (net, no refinement)
 	cd tools && uv run python -m kvt.evaluate
-
-lab-detect-no-refine: lab-extract ## run keybed detector evaluation without corner refinement
-	cd tools && uv run python -m kvt.evaluate --no-refine
 
 clean: ## remove local caches and build artifacts
 	rm -rf tools/.ruff_cache tools/.mypy_cache tools/.pytest_cache tools/.coverage tools/.coverage.* tools/.vulture web/dist

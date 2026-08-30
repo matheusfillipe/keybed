@@ -4,7 +4,9 @@ import { drawHands } from "./draw";
 import { createHandTracker, type HandTracker } from "./hands";
 import type { Point } from "./homography";
 import { createLab } from "./lab";
+import { createNotes } from "./notes";
 import { type GridGeometry, projectGrid, solvePose } from "./pose";
+import { createOverlayScene, type OverlayScene } from "./scene";
 
 function cornerPoints(corners: Corners, w: number, h: number): Point[] {
   return corners.map((corner) => ({ x: corner.x * w, y: corner.y * h }));
@@ -94,14 +96,21 @@ function startLoop(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   calibration: Calibration,
+  overlay: OverlayScene,
 ): void {
   let lastVideoTime = -1;
   let hands: HandLandmarkerResult | null = null;
   let gridVisible = true;
+  let notesVisible = false;
+  const notes = createNotes(overlay.scene);
 
   window.addEventListener("keydown", (event) => {
     if (event.key === "g") {
       gridVisible = !gridVisible;
+    }
+    if (event.key === "n") {
+      notesVisible = !notesVisible;
+      notes.setEnabled(notesVisible);
     }
   });
 
@@ -115,18 +124,17 @@ function startLoop(
     ctx.drawImage(video, 0, 0, w, h);
     ctx.fillStyle = "rgba(5,5,5,0.35)";
     ctx.fillRect(0, 0, w, h);
+    const pose = solvePose(cornerPoints(calibration.getCorners(), w, h), w, h);
+    overlay.setPose(pose, w, h);
     if (gridVisible) {
-      const pose = solvePose(
-        cornerPoints(calibration.getCorners(), w, h),
-        w,
-        h,
-      );
       drawGrid(ctx, projectGrid(pose, w, h));
     }
+    notes.update(performance.now());
     if (hands) {
       drawHands(ctx, hands, w, h);
     }
     calibration.draw(ctx, w, h);
+    overlay.render();
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
@@ -157,7 +165,8 @@ async function boot(): Promise<void> {
       throw new Error("2d canvas context unavailable");
     }
     const calibration = createCalibration(canvas);
-    startLoop(video, tracker, canvas, ctx, calibration);
+    const overlay = createOverlayScene();
+    startLoop(video, tracker, canvas, ctx, calibration, overlay);
     const stream = video.srcObject;
     if (stream instanceof MediaStream) {
       createLab({ video, stream, getCorners: calibration.getCorners });
