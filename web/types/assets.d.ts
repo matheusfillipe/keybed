@@ -1,0 +1,11 @@
+/** Files the runtime loads at runtime rather than imports. Each bundler names
+ * them its own way, so the app that embeds this hands them over. */
+export interface RuntimeAssets {
+    /** onnxruntime-web's threaded SIMD wasm. */
+    readonly ortWasm: string;
+    /** MediaPipe's loader script and its wasm. */
+    readonly mediapipeLoader: string;
+    readonly mediapipeWasm: string;
+}
+export declare const handModelUrl = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+export declare const skinModelUrl = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite";

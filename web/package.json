@@ -8,7 +8,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "fix": "biome check --write ."
+    "fix": "biome check --write .",
+    "types": "tsc -p tsconfig.types.json"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",

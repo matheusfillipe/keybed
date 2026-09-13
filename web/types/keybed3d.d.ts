@@ -1,0 +1,14 @@
+import type { PerspectiveCamera } from "three";
+import { Vector3 } from "three";
+import type { Point } from "./homography";
+export declare const KEY_TOP_Y = 0.61;
+export declare const BACK_X = -1.627;
+export declare const FRONT_X = 1.431;
+export declare const SPAN_MIN_Z = -16.399;
+export declare const SPAN_MAX_Z = 8.431;
+export declare const KEYBED_CORNERS: Vector3[];
+export declare const KEYBED_CENTRE: Vector3;
+export declare const SPAN: number;
+export declare const DEPTH: number;
+export declare function projectCorners(camera: PerspectiveCamera): Point[];
+export declare function visibleFraction(camera: PerspectiveCamera): number;

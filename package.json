@@ -5,10 +5,14 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
-    ".": "./web/src/index.ts"
+    ".": {
+      "types": "./web/types/index.d.ts",
+      "default": "./web/src/index.ts"
+    }
   },
   "files": [
-    "web/src"
+    "web/src",
+    "web/types"
   ],
   "peerDependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",

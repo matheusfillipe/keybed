@@ -24,7 +24,7 @@ precommit: fix ## hook entry: same as fix
 
 # --- checks (verify, never produce artifacts) ---
 
-check: tools-format-check tools-lint tools-typecheck tools-test web-typecheck web-lint web-test web-build ## run all checks (the pre-commit gate)
+check: tools-format-check tools-lint tools-typecheck tools-test web-typecheck web-types web-lint web-test web-build ## run all checks (the pre-commit gate)
 
 quality: check tools-dead-code tools-unused-deps tools-security tools-audit tools-coverage build ## run the full quality gate
 	@echo "quality gate passed"
@@ -64,6 +64,9 @@ build: ## build the python package (uv build)
 
 web-typecheck: ## typecheck web (tsc)
 	$(BUN) run typecheck
+
+web-types: ## write the published type declarations (tsc)
+	$(BUN) run types
 
 web-lint: ## lint web (biome check)
 	$(BUN) run lint
