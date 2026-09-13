@@ -9,6 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from kvt.template import STRIP_HEIGHT, STRIP_WIDTH, strip_destination
+
 _FRAMES_PER_CLIP = 40
 _LABELS_NAME = "labels.json"
 _GEMINI_SUFFIX = "-orig.png"
@@ -16,6 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_RECORDINGS_DIR = _REPO_ROOT / "data" / "recordings"
 DEFAULT_FRAMES_DIR = _REPO_ROOT / "data" / "frames"
 DEFAULT_GEMINI_DIR = _REPO_ROOT / "data" / "gemini"
+DEFAULT_SYNTH_DIR = _REPO_ROOT / "data" / "synth"
 
 
 @dataclass
@@ -55,6 +58,53 @@ class Labels:
     frames: dict[str, FrameEntry] = field(default_factory=dict)
 
 
+def canonical_quad(quad: np.ndarray) -> np.ndarray:
+    # every consumer maps the 52 white keys onto edge 0->1 and the keybed depth onto edge 1->2
+    if _edge_length(quad, 1) >= _edge_length(quad, 3):
+        return np.asarray(quad, dtype=np.float64)
+    return np.roll(quad, -1, axis=0).astype(np.float64)
+
+
+def orient_quad(image_bgr: np.ndarray, quad: np.ndarray) -> np.ndarray:
+    # canonical_quad leaves a 180 degree ambiguity; the black keys settle it, they sit at the back
+    ordered = canonical_quad(quad)
+    flipped = np.roll(ordered, 2, axis=0)
+    return (
+        ordered
+        if _back_darkness(image_bgr, ordered) < _back_darkness(image_bgr, flipped)
+        else flipped
+    )
+
+
+def _back_darkness(image_bgr: np.ndarray, quad: np.ndarray) -> float:
+    matrix = cv2.getPerspectiveTransform(
+        quad.astype(np.float32), strip_destination(STRIP_WIDTH, STRIP_HEIGHT)
+    )
+    strip = cv2.warpPerspective(image_bgr, matrix, (STRIP_WIDTH, STRIP_HEIGHT))
+    return float(cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)[: STRIP_HEIGHT // 3].mean())
+
+
+def _edge_length(quad: np.ndarray, index: int) -> float:
+    return float(np.linalg.norm(quad[index] - quad[0]))
+
+
+def align(quad: np.ndarray, truth: np.ndarray) -> np.ndarray:
+    """The quad's corners in the truth's order, whatever order the fit produced them in.
+
+    Canonical order picks the longer projected edge, and on a foreshortened keybed that is
+    the wrong one, so a fit that is right on the pixels can be compared corner to wrong corner.
+    """
+    best = quad
+    best_distance = float("inf")
+    for candidate in (quad, quad[::-1]):
+        for roll in range(4):
+            rolled = np.roll(candidate, roll, axis=0)
+            distance = float(np.linalg.norm(rolled - truth, axis=1).sum())
+            if distance < best_distance:
+                best, best_distance = rolled, distance
+    return np.asarray(best, dtype=np.float64)
+
+
 def scan_recordings(recordings_dir: Path) -> list[Recording]:
     recordings: list[Recording] = []
     for media_path in sorted(recordings_dir.iterdir()):
@@ -74,6 +124,28 @@ def scan_recordings(recordings_dir: Path) -> list[Recording]:
             )
         )
     return recordings
+
+
+def load_synth(synth_dir: Path = DEFAULT_SYNTH_DIR) -> list[Frame]:
+    # rendered frames carry projected corners, already in convention, so they are never re-oriented
+    if not synth_dir.is_dir():
+        return []
+    frames: list[Frame] = []
+    for image_path in sorted(synth_dir.glob("*.png")):
+        sidecar_path = image_path.with_suffix(".json")
+        if not sidecar_path.is_file():
+            continue
+        sidecar = parse_sidecar(sidecar_path, "synth")
+        frames.append(
+            Frame(
+                image_path=image_path,
+                corners_px=sidecar.corners
+                * np.array([float(sidecar.width), float(sidecar.height)]),
+                source_stem=image_path.stem,
+                kind="synth",
+            )
+        )
+    return frames
 
 
 def scan_gemini(gemini_dir: Path) -> list[Recording]:
@@ -102,10 +174,13 @@ def extract(recordings_dir: Path, frames_dir: Path, gemini_dir: Path | None = No
     recordings = scan_recordings(recordings_dir)
     if gemini_dir is not None:
         recordings += scan_gemini(gemini_dir)
+    # the media may be deleted once extracted, the label may not: a sidecar still present
+    # keeps its frames, a sidecar taken away takes them with it
+    _forget_missing(frames_dir, labels, {path.stem for path in recordings_dir.glob("*.json")})
     for recording in recordings:
         if recording.stem in labels.extracted:
             continue
-        sidecar = _parse_sidecar(
+        sidecar = parse_sidecar(
             recording.sidecar_path, "gemini" if recording.kind == "gemini" else None
         )
         corners_px = sidecar.corners * np.array([float(sidecar.width), float(sidecar.height)])
@@ -120,6 +195,18 @@ def extract(recordings_dir: Path, frames_dir: Path, gemini_dir: Path | None = No
         )
     _write_labels(frames_dir, labels)
     return load_frames(frames_dir)
+
+
+def _forget_missing(frames_dir: Path, labels: Labels, present: set[str]) -> None:
+    # a label withdrawn from the recordings dir has to leave here too, or training keeps
+    # reading a frame whose label was taken away for being wrong
+    for name, entry in list(labels.frames.items()):
+        if entry.kind != "gemini" and entry.source_stem not in present:
+            del labels.frames[name]
+            (frames_dir / name).unlink(missing_ok=True)
+    for stem in list(labels.extracted):
+        if stem not in present:
+            del labels.extracted[stem]
 
 
 def load_frames(frames_dir: Path) -> list[Frame]:
@@ -147,7 +234,7 @@ def _extract_snap(
     name = f"{recording.stem}.png"
     shutil.copyfile(recording.media_path, frames_dir / name)
     labels.frames[name] = FrameEntry(
-        corners_px=corners_px,
+        corners_px=orient_quad(image, corners_px),
         source_stem=recording.stem,
         kind="snap",
     )
@@ -165,7 +252,7 @@ def _extract_gemini(
     name = f"{recording.stem}{_GEMINI_SUFFIX}"
     shutil.copyfile(recording.media_path, frames_dir / name)
     labels.frames[name] = FrameEntry(
-        corners_px=corners_px,
+        corners_px=orient_quad(image, corners_px),
         source_stem=recording.stem,
         kind="gemini",
     )
@@ -184,16 +271,19 @@ def _extract_clip(
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     step = max(1, round(total / _FRAMES_PER_CLIP)) if total > 0 else 1
     index = 0
+    oriented: np.ndarray | None = None
     try:
         while True:
             ok, image = capture.read()
             if not ok:
                 break
+            if oriented is None:
+                oriented = orient_quad(image, corners_px)
             if index % step == 0:
                 name = f"{recording.stem}.{index:06d}.png"
                 cv2.imwrite(str(frames_dir / name), image)
                 labels.frames[name] = FrameEntry(
-                    corners_px=corners_px,
+                    corners_px=oriented,
                     source_stem=recording.stem,
                     kind="rec",
                 )
@@ -202,7 +292,7 @@ def _extract_clip(
         capture.release()
 
 
-def _parse_sidecar(path: Path, default_kind: str | None = None) -> Sidecar:
+def parse_sidecar(path: Path, default_kind: str | None = None) -> Sidecar:
     data = json.loads(path.read_text())
     if not isinstance(data, dict):
         raise ValueError(f"sidecar {path} is not a json object")
@@ -223,7 +313,10 @@ def _parse_sidecar(path: Path, default_kind: str | None = None) -> Sidecar:
         if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
             raise ValueError(f"sidecar {path} corner {i} has invalid coordinates")
         points[i] = (float(x), float(y))
-    return Sidecar(kind=kind, corners=points, width=width, height=height)
+    scale = np.array([float(width), float(height)])
+    return Sidecar(
+        kind=kind, corners=canonical_quad(points * scale) / scale, width=width, height=height
+    )
 
 
 def _load_labels(frames_dir: Path) -> Labels:
@@ -268,7 +361,7 @@ def _parse_frame_entry(entry: object) -> FrameEntry | None:
         if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
             return None
         corners[i] = (float(x), float(y))
-    return FrameEntry(corners_px=corners, source_stem=source_stem, kind=kind)
+    return FrameEntry(corners_px=canonical_quad(corners), source_stem=source_stem, kind=kind)
 
 
 def _write_labels(frames_dir: Path, labels: Labels) -> None:

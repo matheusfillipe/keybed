@@ -1,4 +1,6 @@
 import type { Corners } from "./calibrate";
+import { styleButton } from "./hud";
+import { checkQuad } from "./quad";
 
 interface Sidecar {
   kind: "rec" | "snap";
@@ -20,6 +22,7 @@ interface LabBar {
 export interface LabOptions {
   video: HTMLVideoElement;
   stream: MediaStream;
+  mount: HTMLElement;
   getCorners(): Corners | null;
 }
 
@@ -51,8 +54,7 @@ function containerExtension(mimeType: string): string {
   return subtype || "webm";
 }
 
-function createBar(): LabBar {
-  const bar = document.createElement("div");
+function createBar(mount: HTMLElement): LabBar {
   const rec = document.createElement("button");
   const snap = document.createElement("button");
   const timer = document.createElement("span");
@@ -60,38 +62,14 @@ function createBar(): LabBar {
   rec.textContent = "rec";
   snap.textContent = "snap";
   timer.textContent = "00:00";
-  Object.assign(bar.style, {
-    position: "fixed",
-    top: "12px",
-    left: "12px",
-    zIndex: "10",
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    padding: "8px 12px",
-    background: "rgba(5,5,5,0.6)",
-    borderRadius: "8px",
-    color: "#e5e5e5",
-    fontFamily: "sans-serif",
-    fontSize: "13px",
-  });
   for (const button of [rec, snap]) {
-    Object.assign(button.style, {
-      background: "#1f1f1f",
-      border: "1px solid rgba(229,229,229,0.25)",
-      borderRadius: "6px",
-      color: "#e5e5e5",
-      cursor: "pointer",
-      font: "inherit",
-      padding: "4px 10px",
-    });
-    bar.appendChild(button);
+    styleButton(button);
+    mount.appendChild(button);
   }
   timer.style.fontVariantNumeric = "tabular-nums";
-  status.style.minWidth = "8em";
-  bar.appendChild(timer);
-  bar.appendChild(status);
-  document.body.appendChild(bar);
+  status.style.color = "#8a8a8a";
+  mount.appendChild(timer);
+  mount.appendChild(status);
   return { rec, snap, timer, status };
 }
 
@@ -105,8 +83,8 @@ function download(blob: Blob, name: string): void {
 }
 
 export function createLab(options: LabOptions): void {
-  const { video, stream, getCorners } = options;
-  const bar = createBar();
+  const { video, stream, getCorners, mount } = options;
+  const bar = createBar(mount);
   let recorder: MediaRecorder | null = null;
   let startedAt = 0;
   let timerInterval: number | null = null;
@@ -166,7 +144,21 @@ export function createLab(options: LabOptions): void {
       });
   };
 
+  const guard = (): boolean => {
+    const corners = getCorners();
+    const check = corners
+      ? checkQuad(corners)
+      : { usable: false, reason: "no corners" };
+    if (!check.usable) {
+      flash(`not saved: ${check.reason}`);
+    }
+    return check.usable;
+  };
+
   const snapshot = (): void => {
+    if (!guard()) {
+      return;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -200,6 +192,9 @@ export function createLab(options: LabOptions): void {
       recorder.stop();
       return;
     }
+    if (!guard()) {
+      return;
+    }
     const mimeType = pickMimeType();
     const next = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     const chunks: Blob[] = [];
@@ -213,8 +208,7 @@ export function createLab(options: LabOptions): void {
       const durationMs = Date.now() - startedAt;
       const blob = new Blob(chunks, { type: next.mimeType });
       recorder = null;
-      bar.rec.style.background = "#1f1f1f";
-      bar.rec.style.borderColor = "rgba(229,229,229,0.25)";
+      styleButton(bar.rec);
       setTimer(false);
       save(
         `rec-${fileStamp(new Date())}.${containerExtension(next.mimeType)}`,
@@ -232,6 +226,7 @@ export function createLab(options: LabOptions): void {
     };
     next.start();
     recorder = next;
+    styleButton(bar.rec);
     bar.rec.style.background = "#dc2626";
     bar.rec.style.borderColor = "#dc2626";
     setTimer(true);

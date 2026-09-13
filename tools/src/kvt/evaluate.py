@@ -2,24 +2,37 @@
 
 import argparse
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
 import cv2
 import numpy as np
 
-from kvt.dataset import Frame, load_frames
+from kvt.dataset import Frame, load_frames, orient_quad
 from kvt.detect import Detection, find_keybed, find_keybed_pattern
-from kvt.model import KeybedNet, load_model, predict_corners
-from kvt.refine import refine_quad
+from kvt.fitquad import quad_from_mask
+from kvt.jitter import DEFAULT_SEG2_PATH, constrain
+from kvt.model import (
+    KeybedNet,
+    KeybedSegNet,
+    load_model,
+    load_seg_model,
+    predict_corners,
+    predict_mask,
+)
+from kvt.refine_edges import refine_quad
+from kvt.segnet2 import KeybedSegNet2, load_seg2, predict_mask2
 
-Method = Literal["v0", "pattern", "net"]
+Method = Literal["v0", "pattern", "net", "seg", "seg2"]
 Detector = Callable[[np.ndarray], Detection | None]
 _DETECTORS: dict[str, Detector] = {"v0": find_keybed, "pattern": find_keybed_pattern}
 
 _PRESENT_THRESHOLD = 0.5
 _SUCCESS_RADIUS_PX = 15.0
+_DUPLICATE_QUAD_PX = 1.0
+_FINE_TUNE_KIND = "rec"
+_MASK_THRESHOLD = 0.5
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_FRAMES_DIR = _REPO_ROOT / "data" / "frames"
 DEFAULT_OUT_DIR = _REPO_ROOT / "data" / "out" / "detect"
@@ -44,9 +57,48 @@ def net_detector(model: KeybedNet) -> Detector:
     return detect
 
 
-def _detector_for(method: Method) -> Detector:
+def seg_detector(model: KeybedSegNet, threshold: float = _MASK_THRESHOLD) -> Detector:
+    def detect(image_bgr: np.ndarray) -> Detection | None:
+        probability = predict_mask(model, cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+        quad = quad_from_mask((probability > threshold).astype(np.uint8) * 255)
+        if quad is None:
+            return None
+        refined = refine_quad(image_bgr, quad)
+        return Detection(
+            quad_px=orient_quad(image_bgr, refined), confidence=float(probability.max())
+        )
+
+    return detect
+
+
+def seg2_detector(
+    model: KeybedSegNet2, threshold: float = _MASK_THRESHOLD, constrained: bool = False
+) -> Detector:
+    def detect(image_bgr: np.ndarray) -> Detection | None:
+        height, width = image_bgr.shape[:2]
+        small = predict_mask2(model, image_bgr)
+        quad = quad_from_mask((small > threshold).astype(np.uint8) * 255)
+        if quad is None:
+            return None
+        scaled = quad / float(small.shape[0] - 1) * np.array([float(width), float(height)])
+        refined = orient_quad(image_bgr, refine_quad(image_bgr, scaled))
+        if constrained:
+            refined, _ = constrain(image_bgr, small, refined)
+        return Detection(quad_px=refined, confidence=float(small.max()))
+
+    return detect
+
+
+def _detector_for(
+    method: Method, model_path: Path = DEFAULT_MODEL_PATH, constrained: bool = False
+) -> Detector:
+    if method == "seg2":
+        seg2_path = DEFAULT_SEG2_PATH if model_path == DEFAULT_MODEL_PATH else model_path
+        return seg2_detector(load_seg2(seg2_path), constrained=constrained)
     if method == "net":
-        return net_detector(load_model(DEFAULT_MODEL_PATH))
+        return net_detector(load_model(model_path))
+    if method == "seg":
+        return seg_detector(load_seg_model(model_path))
     return _DETECTORS[method]
 
 
@@ -58,20 +110,14 @@ class FrameResult:
     locked: bool
     success: bool
     mean_error_px: float | None
-    pre_error_px: float | None = None
-
-
-def _mean_error(quad_px: np.ndarray, corners_px: np.ndarray | None) -> float | None:
-    if corners_px is None:
-        return None
-    return float(np.linalg.norm(quad_px - corners_px, axis=1).mean())
+    trained: bool = False
 
 
 def evaluate_frame(
     frame: Frame,
     method: Method = "pattern",
     detector: Detector | None = None,
-    refine: bool = False,
+    trained: bool = False,
 ) -> FrameResult:
     image = cv2.imread(str(frame.image_path))
     if image is None:
@@ -87,13 +133,9 @@ def evaluate_frame(
             locked=False,
             success=False,
             mean_error_px=None,
-            pre_error_px=None,
+            trained=trained,
         )
     quad_px = detection.quad_px
-    pre_error_px: float | None = None
-    if method == "net" and refine:
-        pre_error_px = _mean_error(quad_px, frame.corners_px)
-        quad_px = refine_quad(image, quad_px)
     if frame.corners_px is None:
         return FrameResult(
             source_stem=frame.source_stem,
@@ -102,7 +144,7 @@ def evaluate_frame(
             locked=True,
             success=False,
             mean_error_px=None,
-            pre_error_px=pre_error_px,
+            trained=trained,
         )
     errors = np.linalg.norm(quad_px - frame.corners_px, axis=1)
     return FrameResult(
@@ -112,17 +154,41 @@ def evaluate_frame(
         locked=True,
         success=bool(float(errors.max()) <= _SUCCESS_RADIUS_PX),
         mean_error_px=float(errors.mean()),
-        pre_error_px=pre_error_px,
+        trained=trained,
     )
 
 
+def fine_tuned_frames(frames: list[Frame]) -> list[bool]:
+    # a snapshot that reuses a fine-tuned clip's corners is training data whatever its kind says
+    quads = [
+        frame.corners_px
+        for frame in frames
+        if frame.kind == _FINE_TUNE_KIND and frame.corners_px is not None
+    ]
+    return [
+        frame.corners_px is not None
+        and any(
+            float(np.abs(frame.corners_px - quad).max()) <= _DUPLICATE_QUAD_PX for quad in quads
+        )
+        for frame in frames
+    ]
+
+
 def run(
-    frames_dir: Path, out_dir: Path, method: Method = "pattern", refine: bool = False
+    frames_dir: Path,
+    out_dir: Path,
+    method: Method = "pattern",
+    model_path: Path = DEFAULT_MODEL_PATH,
+    constrained: bool = False,
 ) -> list[FrameResult]:
     frames = load_frames(frames_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    detector = _detector_for(method)
-    results = [evaluate_frame(frame, method, detector, refine) for frame in frames]
+    detector = _detector_for(method, model_path, constrained)
+    trained = fine_tuned_frames(frames)
+    results = [
+        evaluate_frame(frame, method, detector, flag)
+        for frame, flag in zip(frames, trained, strict=True)
+    ]
     for frame, result in zip(frames, results, strict=True):
         _write_preview(frame, result, out_dir)
     _print_table(results)
@@ -136,16 +202,14 @@ class _GroupStats:
     frames: int = 0
     locked: int = 0
     successes: int = 0
-    error_sum: float = 0.0
-    error_count: int = 0
+    errors: list[float] = field(default_factory=list)
 
     def add(self, result: FrameResult) -> None:
         self.frames += 1
         if result.locked:
             self.locked += 1
             if result.mean_error_px is not None:
-                self.error_sum += result.mean_error_px
-                self.error_count += 1
+                self.errors.append(result.mean_error_px)
         if result.success:
             self.successes += 1
 
@@ -153,8 +217,7 @@ class _GroupStats:
         self.frames += other.frames
         self.locked += other.locked
         self.successes += other.successes
-        self.error_sum += other.error_sum
-        self.error_count += other.error_count
+        self.errors += other.errors
 
     @property
     def lock_rate(self) -> float:
@@ -166,7 +229,11 @@ class _GroupStats:
 
     @property
     def mean_error(self) -> float | None:
-        return self.error_sum / self.error_count if self.error_count else None
+        return sum(self.errors) / len(self.errors) if self.errors else None
+
+    @property
+    def worst_error(self) -> float | None:
+        return max(self.errors) if self.errors else None
 
 
 def _print_table(results: list[FrameResult]) -> None:
@@ -177,33 +244,29 @@ def _print_table(results: list[FrameResult]) -> None:
             _GroupStats(result.source_stem, result.kind),
         ).add(result)
     by_kind: dict[str, _GroupStats] = {}
-    overall = _GroupStats("all", "all")
     for stats in groups.values():
         by_kind.setdefault(stats.kind, _GroupStats(stats.kind, stats.kind)).merge(stats)
-        overall.merge(stats)
+    splits = {"fine-tuned on": _GroupStats("", ""), "held out": _GroupStats("", "")}
+    for result in results:
+        splits["fine-tuned on" if result.trained else "held out"].add(result)
     print(
-        f"{'source':<28} {'kind':<5} {'frames':>6} {'lock':>6} {'success':>8} {'mean_err_px':>12}"
+        f"{'source':<28} {'kind':<7} {'frames':>6} {'lock':>6} {'success':>8} "
+        f"{'mean_err_px':>12} {'worst_err_px':>13}"
     )
     for stats in groups.values():
         print(_format_row(stats.label, stats.kind, stats))
     for kind in sorted(by_kind):
-        stats = by_kind[kind]
-        print(_format_row(f"{kind} (all)", kind, stats))
-    print(_format_row(overall.label, overall.kind, overall))
-    deltas = [
-        result.pre_error_px - result.mean_error_px
-        for result in results
-        if result.pre_error_px is not None and result.mean_error_px is not None
-    ]
-    delta = f"{sum(deltas) / len(deltas):.1f}" if deltas else "-"
-    print(f"mean refinement delta px: {delta}")
+        print(_format_row(f"{kind} (all)", kind, by_kind[kind]))
+    for label, stats in splits.items():
+        print(_format_row(label, "", stats))
 
 
 def _format_row(label: str, kind: str, stats: _GroupStats) -> str:
     mean_error = "-" if stats.mean_error is None else f"{stats.mean_error:.1f}"
+    worst_error = "-" if stats.worst_error is None else f"{stats.worst_error:.1f}"
     return (
-        f"{label:<28} {kind:<5} {stats.frames:>6} {stats.lock_rate:>6.2f} "
-        f"{stats.success_rate:>8.2f} {mean_error:>12}"
+        f"{label:<28} {kind:<7} {stats.frames:>6} {stats.lock_rate:>6.2f} "
+        f"{stats.success_rate:>8.2f} {mean_error:>12} {worst_error:>13}"
     )
 
 
@@ -225,11 +288,14 @@ def main() -> None:
     )
     parser.add_argument("--frames-dir", type=Path, default=DEFAULT_FRAMES_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    parser.add_argument("--method", choices=("v0", "pattern", "net"), default=None)
-    parser.add_argument("--refine", action="store_true")
+    parser.add_argument("--method", choices=("v0", "pattern", "net", "seg", "seg2"), default=None)
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
+    parser.add_argument(
+        "--constrained", action="store_true", help="refit as the keybed rectangle in 3D"
+    )
     args = parser.parse_args()
     method = cast(Method, args.method) if args.method is not None else default_method()
-    run(args.frames_dir, args.out_dir, method, refine=args.refine)
+    run(args.frames_dir, args.out_dir, method, args.model, args.constrained)
 
 
 if __name__ == "__main__":

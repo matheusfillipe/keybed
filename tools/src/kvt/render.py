@@ -1,16 +1,14 @@
 """Synthetic keybed sample renderer for detector training."""
 
-import json
+import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from kvt.dataset import DEFAULT_FRAMES_DIR, load_frames
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_RECORDINGS_DIR = _REPO_ROOT / "data" / "recordings"
+from kvt.dataset import DEFAULT_FRAMES_DIR, canonical_quad, load_frames
 
 _WHITE_COUNT = 52.0
 _BLACK_OFFSETS = (0.60, 1.75, 3.60, 4.63, 5.66)
@@ -20,7 +18,7 @@ _BLACK_DEPTH_FRACTION = 0.6
 _PIXELS_PER_UNIT = 20.0
 
 _ABSENT_PROBABILITY = 0.1
-_REAL_BACKGROUND_PROBABILITY = 0.7
+_REAL_BACKGROUND_PROBABILITY = 0.5
 _REAL_NEGATIVE_PROBABILITY = 0.5
 _INPAINT_RADIUS = 6
 _INPAINT_MARGIN_PX = 8
@@ -38,15 +36,25 @@ _OCCLUDER_PROBABILITY = 0.6
 _OCCLUDER_MAX_AREA_FRACTION = 0.4
 _NOISE_SIGMA_RANGE = (2.0, 6.0)
 
-_DEFAULT_QUADS = np.array(
-    [
-        [[0.42, 0.0], [0.545, 0.0], [0.561, 1.0], [0.289, 1.0]],
-        [[0.398, 0.012], [0.491, 0.012], [0.467, 0.983], [0.289, 0.977]],
-        [[0.367, 0.148], [0.474, 0.15], [0.467, 1.0], [0.23, 1.0]],
-        [[0.519, 0.077], [0.62, 0.029], [0.656, 0.984], [0.425, 1.0]],
-        [[0.888, 0.14], [0.981, 0.193], [0.471, 1.0], [0.353, 0.85]],
-    ]
-)
+_FOCAL_RANGE = (0.6, 2.4)
+_SPAN_RANGE = (0.35, 1.6)
+_ELEVATION_RANGE = (18.0, 88.0)
+_AZIMUTH_RANGE = (-70.0, 70.0)
+_ROLL_RANGE = (-30.0, 30.0)
+_PRINCIPAL_RANGE = (0.1, 0.9)
+_MIN_VISIBLE_FRACTION = 0.45
+_QUAD_ATTEMPTS = 24
+
+# white keys on the boards people own: 25, 37, 49, 61, 73, 76 and 88 key instruments
+_WHITE_COUNTS = (15, 22, 29, 36, 43, 45, 52)
+
+
+def _world_corners(white_count: float) -> np.ndarray:
+    half = white_count / 2.0
+    depth = _STRIP_DEPTH / 2.0
+    return np.array(
+        [[-half, -depth, 0.0], [half, -depth, 0.0], [half, depth, 0.0], [-half, depth, 0.0]]
+    )
 
 
 @dataclass
@@ -54,42 +62,16 @@ class RenderSample:
     image: np.ndarray
     quad_px: np.ndarray
     present: bool
+    white_count: float = _WHITE_COUNT
 
-
-def _sidecar_quad(path: Path) -> np.ndarray | None:
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    corners = data.get("corners")
-    if not isinstance(corners, list) or len(corners) != 4:
-        return None
-    points = np.zeros((4, 2), dtype=np.float64)
-    for i, corner in enumerate(corners):
-        if not isinstance(corner, dict):
-            return None
-        x = corner.get("x")
-        y = corner.get("y")
-        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
-            return None
-        points[i] = (float(x), float(y))
-    return points
-
-
-def _load_quads(recordings_dir: Path) -> np.ndarray:
-    quads = [
-        quad
-        for path in sorted(recordings_dir.glob("*.json"))
-        if (quad := _sidecar_quad(path)) is not None
-    ]
-    if not quads:
-        return _DEFAULT_QUADS.copy()
-    return np.stack(quads)
-
-
-_BASE_QUADS = _load_quads(_RECORDINGS_DIR)
+    @property
+    def mask(self) -> np.ndarray:
+        # the mask covers the whole keybed even where a hand hides it, so the net learns to fill in
+        height, width = self.image.shape[:2]
+        mask = np.zeros((height, width), dtype=np.uint8)
+        if self.present:
+            cv2.fillPoly(mask, [self.quad_px.astype(np.int32)], 255)
+        return mask
 
 
 def render_sample(
@@ -109,17 +91,22 @@ def render_sample(
     if sampled is not None:
         real_background, real_quad = sampled
         return _render_with_background(rng, real_background, real_quad, width, height, present)
-    quad = _sample_quad(rng, width, height)
+    white_count = float(rng.choice(_WHITE_COUNTS))
+    quad = _sample_quad(rng, width, height, white_count)
     canvas = _render_background(rng, width, height)
     if present:
-        _draw_keybed(canvas, quad, rng)
+        _draw_keybed(canvas, quad, rng, white_count)
         _maybe_add_glare(canvas, rng)
         _maybe_add_occluders(canvas, quad, rng)
-    return _finalize(canvas, quad, present, rng)
+    return _finalize(canvas, quad, present, rng, white_count)
 
 
 def _finalize(
-    canvas: np.ndarray, quad: np.ndarray, present: bool, rng: np.random.Generator
+    canvas: np.ndarray,
+    quad: np.ndarray,
+    present: bool,
+    rng: np.random.Generator,
+    white_count: float = _WHITE_COUNT,
 ) -> RenderSample:
     sigma = float(rng.uniform(*_NOISE_SIGMA_RANGE))
     noisy = canvas + rng.normal(0.0, sigma, canvas.shape)
@@ -127,19 +114,34 @@ def _finalize(
         image=np.asarray(np.clip(noisy, 0.0, 255.0), dtype=np.float32),
         quad_px=quad,
         present=present,
+        white_count=white_count,
     )
 
 
 _REAL_FRAMES: list[tuple[Path, np.ndarray]] | None = None
 
 
+# Real recordings are the backgrounds these samples are composited onto, so a recording left in
+# here is training data no matter what a caller passes for real_fraction. Anything being held
+# out for evaluation has to be named here too, or its score is measured on frames it has seen.
+BACKGROUND_EXCLUDE_ENV = "KVT_BACKGROUND_EXCLUDE"
+
+
+def _excluded() -> tuple[str, ...]:
+    raw = os.environ.get(BACKGROUND_EXCLUDE_ENV, "")
+    return tuple(part for part in (p.strip() for p in raw.split(",")) if part)
+
+
 def _real_frames() -> list[tuple[Path, np.ndarray]]:
     global _REAL_FRAMES
     if _REAL_FRAMES is None:
+        excluded = _excluded()
         _REAL_FRAMES = [
             (frame.image_path, frame.corners_px)
             for frame in load_frames(DEFAULT_FRAMES_DIR)
-            if frame.kind == "rec" and frame.corners_px is not None
+            if frame.kind == "rec"
+            and frame.corners_px is not None
+            and not any(mark in frame.source_stem for mark in excluded)
         ]
     return _REAL_FRAMES
 
@@ -168,7 +170,7 @@ def _render_with_background(
 ) -> RenderSample:
     image = np.asarray(background, dtype=np.float32).copy()
     source_height, source_width = image.shape[:2]
-    base = quad_px.astype(np.float64)
+    base = canonical_quad(quad_px.astype(np.float64))
     if (source_width, source_height) != (width, height):
         image = np.asarray(
             cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA), dtype=np.float32
@@ -179,7 +181,7 @@ def _render_with_background(
         present = bool(rng.random() >= _ABSENT_PROBABILITY)
     quad = _perturb_quad(rng, base, width, height)
     if present:
-        _draw_keybed(canvas, quad, rng)
+        _draw_keybed(canvas, quad, rng, float(rng.choice(_WHITE_COUNTS)))
         _maybe_add_glare(canvas, rng)
         _maybe_add_occluders(canvas, quad, rng)
     return _finalize(canvas, quad, present, rng)
@@ -204,11 +206,60 @@ def _inpaint_quad(image: np.ndarray, quad_px: np.ndarray) -> np.ndarray:
     return image
 
 
-def _sample_quad(rng: np.random.Generator, width: int, height: int) -> np.ndarray:
-    base = _BASE_QUADS[int(rng.integers(0, len(_BASE_QUADS)))] * np.array(
-        [float(width), float(height)]
+def _sample_quad(
+    rng: np.random.Generator, width: int, height: int, white_count: float = _WHITE_COUNT
+) -> np.ndarray:
+    best = _project_keybed(rng, width, height, white_count)
+    # a keybed that missed the frame teaches nothing, so keep drawing until enough of it lands
+    for _ in range(_QUAD_ATTEMPTS):
+        if _visible_fraction(best, width, height) >= _MIN_VISIBLE_FRACTION:
+            return best
+        candidate = _project_keybed(rng, width, height, white_count)
+        if _visible_fraction(candidate, width, height) > _visible_fraction(best, width, height):
+            best = candidate
+    return best
+
+
+def _visible_fraction(quad: np.ndarray, width: int, height: int) -> float:
+    edge = np.linspace(quad[0], quad[1], 64)
+    inside = (
+        (edge[:, 0] >= 0.0) & (edge[:, 0] < width) & (edge[:, 1] >= 0.0) & (edge[:, 1] < height)
     )
-    return _perturb_quad(rng, base, width, height)
+    return float(inside.mean())
+
+
+def _project_keybed(
+    rng: np.random.Generator, width: int, height: int, white_count: float
+) -> np.ndarray:
+    focal = float(rng.uniform(*_FOCAL_RANGE)) * width
+    span = float(rng.uniform(*_SPAN_RANGE)) * width
+    # keeping the camera outside the keybed's bounding sphere keeps every corner in front of it
+    distance = max(white_count, focal * white_count / span)
+    elevation = math.radians(float(rng.uniform(*_ELEVATION_RANGE)))
+    azimuth = math.radians(float(rng.uniform(*_AZIMUTH_RANGE)))
+    position = distance * np.array(
+        [
+            math.cos(elevation) * math.sin(azimuth),
+            math.cos(elevation) * math.cos(azimuth),
+            math.sin(elevation),
+        ]
+    )
+    rotation = _look_at_origin(position, math.radians(float(rng.uniform(*_ROLL_RANGE))))
+    camera = (_world_corners(white_count) - position) @ rotation.T
+    principal = np.array([float(width), float(height)]) * rng.uniform(*_PRINCIPAL_RANGE, size=2)
+    return canonical_quad(focal * camera[:, :2] / camera[:, 2:3] + principal)
+
+
+def _look_at_origin(position: np.ndarray, roll: float) -> np.ndarray:
+    forward = -position / float(np.linalg.norm(position))
+    right = np.cross(forward, np.array([0.0, 0.0, 1.0]))
+    right = right / float(np.linalg.norm(right))
+    down = np.cross(forward, right)
+    cos_roll = math.cos(roll)
+    sin_roll = math.sin(roll)
+    return np.stack(
+        [cos_roll * right + sin_roll * down, cos_roll * down - sin_roll * right, forward]
+    )
 
 
 def _perturb_quad(
@@ -273,8 +324,10 @@ def _mid_clutter(rng: np.random.Generator, width: int, height: int) -> np.ndarra
     return canvas
 
 
-def _draw_keybed(canvas: np.ndarray, quad: np.ndarray, rng: np.random.Generator) -> None:
-    sheet = _keybed_sheet(rng)
+def _draw_keybed(
+    canvas: np.ndarray, quad: np.ndarray, rng: np.random.Generator, white_count: float
+) -> None:
+    sheet = _keybed_sheet(rng, white_count)
     sheet_h, sheet_w = sheet.shape[:2]
     src = np.array(
         [
@@ -302,27 +355,31 @@ def _draw_keybed(canvas: np.ndarray, quad: np.ndarray, rng: np.random.Generator)
     canvas[:] = cv2.GaussianBlur(canvas, (0, 0), sigma)
 
 
-def _keybed_sheet(rng: np.random.Generator) -> np.ndarray:
+def _keybed_sheet(rng: np.random.Generator, white_count: float) -> np.ndarray:
     unit = _PIXELS_PER_UNIT
-    sheet_w = round(_WHITE_COUNT * unit)
+    sheet_w = round(white_count * unit)
     sheet_h = round(_STRIP_DEPTH * unit)
     bar_h = round(sheet_h * _BLACK_DEPTH_FRACTION)
     sheet = np.zeros((sheet_h, sheet_w, 3), dtype=np.float32)
-    for key in range(int(_WHITE_COUNT)):
+    for key in range(int(white_count)):
         x0 = round(key * unit)
         x1 = round((key + 1) * unit)
         sheet[:, x0:x1] = float(rng.uniform(*_WHITE_BRIGHTNESS_RANGE))
         if key > 0:
             sheet[:, max(0, x0 - 1) : x0] = float(rng.uniform(*_KEY_SEAM_BRIGHTNESS_RANGE))
-    for octave in range(8):
+    # an 88 key board starts on A and a 61 key one on C, so the 2-3 grouping is not edge aligned
+    phase = float(rng.integers(0, 7))
+    black = float(rng.uniform(*_BLACK_BRIGHTNESS_RANGE))
+    for octave in range(-1, int(white_count // 7) + 2):
         for offset in _BLACK_OFFSETS:
-            u0 = 7.0 * octave + offset
+            u0 = 7.0 * octave + offset - phase
             u1 = u0 + _BLACK_WIDTH
-            if u1 > _WHITE_COUNT:
+            if u1 <= 0.0 or u0 >= white_count:
                 continue
-            sheet[:bar_h, round(u0 * unit) : round(u1 * unit)] = float(
-                rng.uniform(*_BLACK_BRIGHTNESS_RANGE)
-            )
+            x0 = max(0, round(u0 * unit))
+            x1 = min(sheet_w, round(u1 * unit))
+            if x1 > x0:
+                sheet[:bar_h, x0:x1] = black
     return sheet
 
 

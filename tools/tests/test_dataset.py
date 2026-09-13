@@ -5,7 +5,14 @@ import cv2
 import numpy as np
 import pytest
 
-from kvt.dataset import extract, load_frames, scan_recordings
+from kvt.dataset import (
+    canonical_quad,
+    extract,
+    load_frames,
+    orient_quad,
+    parse_sidecar,
+    scan_recordings,
+)
 
 
 def _write_sidecar(path: Path, kind: str, width: int, height: int) -> None:
@@ -14,10 +21,10 @@ def _write_sidecar(path: Path, kind: str, width: int, height: int) -> None:
         "startedAt": 0,
         "durationMs": 0,
         "corners": [
-            {"x": 0.25, "y": 0.1},
-            {"x": 0.75, "y": 0.1},
-            {"x": 0.8, "y": 0.9},
-            {"x": 0.2, "y": 0.9},
+            {"x": 0.25, "y": 0.4},
+            {"x": 0.75, "y": 0.4},
+            {"x": 0.8, "y": 0.6},
+            {"x": 0.2, "y": 0.6},
         ],
         "imageWidth": width,
         "imageHeight": height,
@@ -26,18 +33,35 @@ def _write_sidecar(path: Path, kind: str, width: int, height: int) -> None:
     path.write_text(json.dumps(sidecar))
 
 
+def _keybed_image(corners: np.ndarray, width: int = 320, height: int = 240) -> np.ndarray:
+    image = np.full((height, width, 3), 25, dtype=np.uint8)
+    cv2.fillPoly(image, [corners.astype(np.int32)], (235, 235, 235))
+    back = np.array(
+        [
+            corners[0],
+            corners[1],
+            (corners[1] + corners[2]) / 2.0,
+            (corners[0] + corners[3]) / 2.0,
+        ]
+    )
+    cv2.fillPoly(image, [back.astype(np.int32)], (20, 20, 20))
+    return image
+
+
+SNAP_CORNERS = np.array([[80.0, 96.0], [240.0, 96.0], [256.0, 144.0], [64.0, 144.0]])
+GEMINI_CORNERS = np.array([[32.0, 48.0], [224.0, 48.0], [256.0, 192.0], [64.0, 216.0]])
+
+
 def _write_snap(path: Path) -> None:
-    image = np.zeros((48, 64, 3), dtype=np.uint8)
-    image[10:38, 16:48] = 235
-    cv2.imwrite(str(path), image)
+    cv2.imwrite(str(path), _keybed_image(SNAP_CORNERS))
 
 
 def _write_clip(path: Path, frames: int) -> None:
     avi = path.with_suffix(".avi")
-    writer = cv2.VideoWriter(str(avi), cv2.VideoWriter.fourcc(*"MJPG"), 30, (64, 48))
+    writer = cv2.VideoWriter(str(avi), cv2.VideoWriter.fourcc(*"MJPG"), 30, (320, 240))
     assert writer.isOpened()
-    for i in range(frames):
-        image = np.full((48, 64, 3), 30 + i, dtype=np.uint8)
+    image = _keybed_image(SNAP_CORNERS)
+    for _ in range(frames):
         writer.write(image)
     writer.release()
     avi.replace(path)
@@ -61,9 +85,8 @@ def test_extract_samples_snap_and_clip(tmp_path: Path) -> None:
     assert len(rec_frames) == 45
     assert rec_frames[0].image_path.name == "rec-test.000000.png"
     snap = frames[0] if frames[0].kind == "snap" else frames[-1]
-    expected = np.array([[80.0, 24.0], [240.0, 24.0], [256.0, 216.0], [64.0, 216.0]])
     assert snap.corners_px is not None
-    assert np.allclose(snap.corners_px, expected)
+    assert np.allclose(snap.corners_px, SNAP_CORNERS)
     labels = json.loads((frames_dir / "labels.json").read_text())
     assert set(labels["extracted"]) == {"snap-test", "rec-test"}
     assert (frames_dir / "snap-test.png").is_file()
@@ -147,8 +170,7 @@ def test_extract_raises_on_invalid_sidecars(tmp_path: Path) -> None:
 
 def _write_gemini_scene(gemini_dir: Path, stem: str, with_kind: bool) -> None:
     gemini_dir.mkdir(parents=True, exist_ok=True)
-    image = np.zeros((48, 64, 3), dtype=np.uint8)
-    image[10:38, 16:48] = 235
+    image = _keybed_image(GEMINI_CORNERS)
     for suffix in ("-orig.png", "-mask.png", "-check.png"):
         cv2.imwrite(str(gemini_dir / f"{stem}{suffix}"), image)
     sidecar: dict[str, object] = {
@@ -181,9 +203,8 @@ def test_extract_gemini_scenes_into_frames(tmp_path: Path) -> None:
     gemini_frames = [f for f in frames if f.kind == "gemini"]
     assert [f.image_path.name for f in gemini_frames] == ["00-orig.png", "01-orig.png"]
     assert [f.source_stem for f in gemini_frames] == ["00", "01"]
-    expected = np.array([[32.0, 48.0], [224.0, 48.0], [256.0, 192.0], [64.0, 216.0]])
     assert gemini_frames[0].corners_px is not None
-    assert np.allclose(gemini_frames[0].corners_px, expected)
+    assert np.allclose(gemini_frames[0].corners_px, GEMINI_CORNERS)
     again = extract(recordings_dir, frames_dir, gemini_dir)
     assert [f.image_path.name for f in again] == [f.image_path.name for f in frames]
     assert (frames_dir / "00-orig.png").is_file()
@@ -235,6 +256,67 @@ def test_load_frames_ignores_malformed_labels(tmp_path: Path) -> None:
     assert np.allclose(corners, [[0, 0], [1, 0], [1, 1], [0, 1]])
 
 
+def test_canonical_quad_puts_the_key_span_on_the_first_edge() -> None:
+    depth_first = np.array([[254.0, 5.0], [314.0, 5.0], [298.0, 472.0], [185.0, 469.0]])
+    canonical = canonical_quad(depth_first)
+    span = np.linalg.norm(canonical[1] - canonical[0])
+    depth = np.linalg.norm(canonical[3] - canonical[0])
+    assert span > depth
+    assert sorted(map(tuple, canonical)) == sorted(map(tuple, depth_first))
+
+
+def test_canonical_quad_is_idempotent() -> None:
+    quad = np.array([[254.0, 5.0], [314.0, 5.0], [298.0, 472.0], [185.0, 469.0]])
+    once = canonical_quad(quad)
+    assert np.array_equal(canonical_quad(once), once)
+
+
+def _banded_keybed(back_dark: bool) -> tuple[np.ndarray, np.ndarray]:
+    image = np.zeros((200, 400, 3), dtype=np.uint8)
+    top, bottom = (30, 220) if back_dark else (220, 30)
+    image[80:120] = top
+    image[120:160] = bottom
+    quad = np.array([[0.0, 80.0], [399.0, 80.0], [399.0, 159.0], [0.0, 159.0]])
+    return image, quad
+
+
+def test_orient_quad_puts_the_black_keys_on_the_first_edge() -> None:
+    image, quad = _banded_keybed(back_dark=True)
+    assert np.array_equal(orient_quad(image, quad), quad)
+
+
+def test_orient_quad_flips_a_quad_that_starts_at_the_key_fronts() -> None:
+    image, quad = _banded_keybed(back_dark=False)
+    assert np.array_equal(orient_quad(image, quad), np.roll(quad, 2, axis=0))
+
+
+def test_orient_quad_is_idempotent() -> None:
+    image, quad = _banded_keybed(back_dark=False)
+    once = orient_quad(image, quad)
+    assert np.array_equal(orient_quad(image, once), once)
+
+
+def test_parse_sidecar_returns_canonical_corners(tmp_path: Path) -> None:
+    path = tmp_path / "rec-vertical.json"
+    path.write_text(
+        json.dumps(
+            {
+                "kind": "rec",
+                "corners": [
+                    {"x": 0.398, "y": 0.012},
+                    {"x": 0.491, "y": 0.012},
+                    {"x": 0.467, "y": 0.983},
+                    {"x": 0.289, "y": 0.977},
+                ],
+                "imageWidth": 640,
+                "imageHeight": 480,
+            }
+        )
+    )
+    corners = parse_sidecar(path).corners * np.array([640.0, 480.0])
+    assert np.linalg.norm(corners[1] - corners[0]) > np.linalg.norm(corners[3] - corners[0])
+
+
 def test_load_frames_keeps_null_corners(tmp_path: Path) -> None:
     frames_dir = tmp_path / "frames"
     frames_dir.mkdir()
@@ -245,3 +327,20 @@ def test_load_frames_keeps_null_corners(tmp_path: Path) -> None:
     (frames_dir / "labels.json").write_text(json.dumps(labels))
     frames = load_frames(frames_dir)
     assert frames[0].corners_px is None
+
+
+def test_extract_forgets_a_recording_that_was_withdrawn(tmp_path: Path) -> None:
+    recordings = tmp_path / "recordings"
+    frames = tmp_path / "frames"
+    recordings.mkdir()
+    for stem in ("snap-keep", "snap-gone"):
+        _write_snap(recordings / f"{stem}.png")
+        _write_sidecar(recordings / f"{stem}.json", "snap", 320, 240)
+    assert {f.source_stem for f in extract(recordings, frames)} == {"snap-keep", "snap-gone"}
+
+    (recordings / "snap-gone.png").unlink()
+    (recordings / "snap-gone.json").unlink()
+    served = extract(recordings, frames)
+    assert {f.source_stem for f in served} == {"snap-keep"}
+    assert not (frames / "snap-gone.png").exists()
+    assert all(f.image_path.exists() for f in served)

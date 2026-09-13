@@ -7,8 +7,16 @@ const HINT_TEXT = "drag corners onto the keyboard, press c to hide";
 
 export type Corners = [Point, Point, Point, Point];
 
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface Calibration {
   getCorners(): Corners;
+  setCorners(corners: readonly Point[]): void;
   draw(ctx: CanvasRenderingContext2D, w: number, h: number): void;
 }
 
@@ -67,18 +75,24 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-export function createCalibration(canvas: HTMLCanvasElement): Calibration {
+export function createCalibration(
+  canvas: HTMLCanvasElement,
+  isActive: () => boolean,
+  // the handles are drawn inside the letterboxed video, so they have to be grabbed there
+  // too; hit testing against the whole canvas misses them by the width of the black bars
+  getBox: () => Box,
+): Calibration {
   const saved = loadCorners();
   const corners: Corners = saved ?? defaultCorners();
-  let calibrating = saved === null;
   let dragging: number | null = null;
 
   const hitCorner = (px: number, py: number): number | null => {
+    const box = getBox();
     let best: number | null = null;
     let bestDist = HIT_RADIUS_PX;
     for (const [i, corner] of corners.entries()) {
-      const dx = px - corner.x * canvas.width;
-      const dy = py - corner.y * canvas.height;
+      const dx = px - (box.x + corner.x * box.w);
+      const dy = py - (box.y + corner.y * box.h);
       const dist = Math.hypot(dx, dy);
       if (dist <= bestDist) {
         best = i;
@@ -97,7 +111,7 @@ export function createCalibration(canvas: HTMLCanvasElement): Calibration {
   };
 
   canvas.addEventListener("pointerdown", (event) => {
-    if (!calibrating || dragging !== null) {
+    if (!isActive() || dragging !== null) {
       return;
     }
     const index = hitCorner(event.clientX, event.clientY);
@@ -111,24 +125,25 @@ export function createCalibration(canvas: HTMLCanvasElement): Calibration {
     if (dragging === null) {
       return;
     }
+    const box = getBox();
     corners[dragging] = {
-      x: clamp01(event.clientX / canvas.width),
-      y: clamp01(event.clientY / canvas.height),
+      x: clamp01((event.clientX - box.x) / box.w),
+      y: clamp01((event.clientY - box.y) / box.h),
     };
   });
   canvas.addEventListener("pointerup", release);
   canvas.addEventListener("pointercancel", release);
 
-  window.addEventListener("keydown", (event) => {
-    if (event.key === "c") {
-      calibrating = !calibrating;
-    }
-  });
-
   return {
     getCorners: () => corners,
+    setCorners: (next) => {
+      for (let i = 0; i < corners.length; i += 1) {
+        corners[i] = { x: next[i].x, y: next[i].y };
+      }
+      saveCorners(corners);
+    },
     draw: (ctx, w, h) => {
-      if (!calibrating) {
+      if (!isActive()) {
         return;
       }
       ctx.strokeStyle = "rgba(56,189,248,0.9)";

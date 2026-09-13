@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { Point } from "./homography";
 import {
+  canonicalQuad,
   DEPTH_UNITS,
   KEYBED_DEPTH_MM,
   projectPoint,
@@ -205,5 +206,33 @@ describe("pose", () => {
         }
       }
     }
+  });
+});
+
+describe("canonicalQuad", () => {
+  const depthFirst: Point[] = [
+    { x: 254, y: 5 },
+    { x: 314, y: 5 },
+    { x: 298, y: 472 },
+    { x: 185, y: 469 },
+  ];
+
+  test("puts the key span on the first edge", () => {
+    const quad = canonicalQuad(depthFirst);
+    const span = Math.hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y);
+    const depth = Math.hypot(quad[3].x - quad[0].x, quad[3].y - quad[0].y);
+    expect(span).toBeGreaterThan(depth);
+  });
+
+  test("keeps the same four points", () => {
+    const key = (p: Point): string => `${p.x},${p.y}`;
+    expect(canonicalQuad(depthFirst).map(key).sort()).toEqual(
+      depthFirst.map(key).sort(),
+    );
+  });
+
+  test("is idempotent", () => {
+    const once = canonicalQuad(depthFirst);
+    expect(canonicalQuad(once)).toEqual(once);
   });
 });

@@ -1,9 +1,17 @@
+import math
+
 import cv2
 import numpy as np
 import pytest
 
-from kvt.refine import _score
-from kvt.render import render_sample
+from kvt.render import (
+    _MIN_VISIBLE_FRACTION,
+    _WHITE_COUNTS,
+    _sample_quad,
+    _visible_fraction,
+    render_sample,
+)
+from kvt.template import score
 
 WIDTH = 640
 HEIGHT = 480
@@ -46,7 +54,7 @@ def test_render_sample_composite_mode_renders_keybed_at_true_quad() -> None:
     assert float(sample.image.max()) <= 255.0
     assert sample.present
     image_bgr = cv2.cvtColor(sample.image.astype(np.uint8), cv2.COLOR_RGB2BGR)
-    assert _score(image_bgr, sample.quad_px, STRIP_WIDTH, STRIP_HEIGHT) > 0.3
+    assert score(image_bgr, sample.quad_px, STRIP_WIDTH, STRIP_HEIGHT) > 0.3
 
 
 def test_render_sample_composite_mode_absent_leaves_inpaint_only() -> None:
@@ -60,7 +68,7 @@ def test_render_sample_composite_mode_absent_leaves_inpaint_only() -> None:
     for sample in samples:
         if not sample.present:
             image_bgr = cv2.cvtColor(sample.image.astype(np.uint8), cv2.COLOR_RGB2BGR)
-            assert _score(image_bgr, sample.quad_px, STRIP_WIDTH, STRIP_HEIGHT) <= 0.3
+            assert score(image_bgr, sample.quad_px, STRIP_WIDTH, STRIP_HEIGHT) <= 0.3
 
 
 def test_render_sample_composite_mode_resizes_background() -> None:
@@ -77,6 +85,62 @@ def test_render_sample_falls_back_to_synthetic_without_real_frames(
     sample = render_sample(np.random.default_rng(3))
     assert sample.image.shape == (HEIGHT, WIDTH, 3)
     assert sample.quad_px.shape == (4, 2)
+
+
+def test_sampled_quads_hold_the_keybed_aspect_ratio() -> None:
+    ratios = []
+    for seed in range(200):
+        quad = _sample_quad(np.random.default_rng(seed), WIDTH, HEIGHT)
+        span = np.linalg.norm(quad[1] - quad[0])
+        depth = np.linalg.norm(quad[3] - quad[0])
+        ratios.append(float(span / depth))
+    assert min(ratios) > 2.0
+    assert max(ratios) < 40.0
+    assert np.median(ratios) > 5.0
+
+
+def test_sampled_quads_cover_a_range_of_orientations() -> None:
+    angles = []
+    for seed in range(200):
+        quad = _sample_quad(np.random.default_rng(seed), WIDTH, HEIGHT)
+        edge = quad[1] - quad[0]
+        angles.append(math.degrees(math.atan2(edge[1], edge[0])))
+    assert np.std(angles) > 10.0
+
+
+def test_synthetic_keybed_renders_against_the_canonical_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("kvt.render._REAL_FRAMES", [])
+    scores = []
+    for seed in range(120):
+        sample = render_sample(np.random.default_rng(seed))
+        # a quad running off the frame warps padding into the strip, which the template cannot match
+        if not sample.present or not _fully_visible(sample.quad_px):
+            continue
+        image_bgr = cv2.cvtColor(sample.image.astype(np.uint8), cv2.COLOR_RGB2BGR)
+        # the sheet starts on a random note, so the oracle has to try every one of the 7 phases
+        scores.append(
+            max(
+                score(
+                    image_bgr,
+                    sample.quad_px,
+                    STRIP_WIDTH,
+                    STRIP_HEIGHT,
+                    sample.white_count,
+                    float(phase),
+                )
+                for phase in range(7)
+            )
+        )
+    assert len(scores) > 10
+    assert np.median(scores) > 0.5
+
+
+def _fully_visible(quad: np.ndarray) -> bool:
+    x = quad[:, 0]
+    y = quad[:, 1]
+    return bool(((x >= 0) & (x < WIDTH) & (y >= 0) & (y < HEIGHT)).all())
 
 
 def test_render_sample_shapes_and_ranges() -> None:
@@ -100,12 +164,17 @@ def test_render_sample_present_flag_varies() -> None:
     assert any(not sample.present for sample in samples)
 
 
-def test_render_sample_quad_stays_roughly_inside_frame() -> None:
-    for seed in range(40):
-        sample = render_sample(np.random.default_rng(seed))
-        x = sample.quad_px[:, 0]
-        y = sample.quad_px[:, 1]
-        assert x.min() >= -0.35 * WIDTH
-        assert x.max() <= 1.35 * WIDTH
-        assert y.min() >= -0.3 * HEIGHT
-        assert y.max() <= 1.3 * HEIGHT
+def test_render_sample_keeps_enough_of_the_keybed_on_screen() -> None:
+    # corners off the frame are wanted, a keybed that missed the frame entirely is not
+    fractions = [
+        _visible_fraction(render_sample(np.random.default_rng(seed)).quad_px, WIDTH, HEIGHT)
+        for seed in range(80)
+    ]
+    assert min(fractions) > 0.2
+    assert np.median(fractions) >= _MIN_VISIBLE_FRACTION
+
+
+def test_render_sample_covers_real_keyboard_sizes() -> None:
+    counts = {render_sample(np.random.default_rng(seed)).white_count for seed in range(120)}
+    assert len(counts) >= 4
+    assert counts <= set(_WHITE_COUNTS)

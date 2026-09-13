@@ -1,6 +1,7 @@
 import {
   HandLandmarker,
   type HandLandmarkerResult,
+  type ImageSource,
 } from "@mediapipe/tasks-vision";
 import wasmLoaderUrl from "@mediapipe/tasks-vision/vision_wasm_internal.js?url";
 import wasmBinaryUrl from "@mediapipe/tasks-vision/vision_wasm_internal.wasm?url";
@@ -9,7 +10,7 @@ const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 
 export interface HandTracker {
-  detect(video: HTMLVideoElement, timestampMs: number): HandLandmarkerResult;
+  detect(frame: ImageSource, timestampMs: number): HandLandmarkerResult;
 }
 
 export async function createHandTracker(): Promise<HandTracker> {
@@ -22,7 +23,7 @@ export async function createHandTracker(): Promise<HandTracker> {
     },
   );
   return {
-    detect: (video, timestampMs) =>
-      handLandmarker.detectForVideo(video, timestampMs),
+    detect: (frame, timestampMs) =>
+      handLandmarker.detectForVideo(frame, timestampMs),
   };
 }

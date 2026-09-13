@@ -11,11 +11,19 @@ import numpy as np
 import torch
 
 from kvt.dataset import DEFAULT_FRAMES_DIR, Frame, load_frames
-from kvt.model import KeybedNet, corner_loss, decode_heatmaps, heatmap_targets, preprocess
+from kvt.model import (
+    KeybedNet,
+    corner_loss,
+    decode_heatmaps,
+    heatmap_targets,
+    load_model,
+    preprocess,
+)
 from kvt.render import render_sample
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MODEL_PATH = _REPO_ROOT / "data" / "models" / "keybed_net.pt"
+DEFAULT_SYNTHETIC_MODEL_PATH = _REPO_ROOT / "data" / "models" / "keybed_net.synthetic.pt"
 
 _FRAME_SIZE = (640, 480)
 _DEFAULT_TRAIN_SAMPLES = 25_000
@@ -191,6 +199,7 @@ def train_model(
     workers: int = _RENDER_WORKERS,
     frames_dir: Path = DEFAULT_FRAMES_DIR,
     fine_tune_steps: int = _FINE_TUNE_STEPS,
+    synthetic_path: Path | None = None,
 ) -> tuple[KeybedNet, float]:
     torch.manual_seed(seed)
     model = KeybedNet()
@@ -224,6 +233,10 @@ def train_model(
         final_mae = best_mae
         if best_state is not None:
             model.load_state_dict(best_state)
+        # synthetic-only weights separate renderer quality from clip memorisation
+        if synthetic_path is not None:
+            synthetic_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(model.state_dict(), synthetic_path)
         items = _fine_tune_items(load_frames(frames_dir))
         if items is not None and fine_tune_steps > 0:
             before, _, _, _ = _evaluate(model, pool, val_samples, batch_size, seed)
@@ -246,6 +259,24 @@ def train_model(
     return model, final_mae
 
 
+def fine_tune_from(
+    synthetic_path: Path,
+    frames_dir: Path = DEFAULT_FRAMES_DIR,
+    steps: int = _FINE_TUNE_STEPS,
+    val_samples: int = _DEFAULT_VAL_SAMPLES,
+    batch_size: int = _BATCH_SIZE,
+    seed: int = _SEED,
+) -> tuple[KeybedNet, float]:
+    model = load_model(synthetic_path)
+    items = _fine_tune_items(load_frames(frames_dir))
+    if items is None:
+        raise ValueError(f"no rec frames to fine-tune on in {frames_dir}")
+    before, _, _, _ = _evaluate(model, None, val_samples, batch_size, seed)
+    mae = _fine_tune(model, items, None, val_samples, batch_size, seed, steps)
+    print(f"fine-tune val_mae_px before {before:.2f} after {mae:.2f}", flush=True)
+    return model, mae
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="train the keybed corner detector on synthetic renders, "
@@ -254,8 +285,25 @@ def main() -> None:
     parser.add_argument("--train-samples", type=int, default=_DEFAULT_TRAIN_SAMPLES)
     parser.add_argument("--val-samples", type=int, default=_DEFAULT_VAL_SAMPLES)
     parser.add_argument("--epochs", type=int, default=_DEFAULT_EPOCHS)
+    parser.add_argument(
+        "--fine-tune-from",
+        type=Path,
+        default=None,
+        help="skip synthetic training and fine-tune this checkpoint on the rec frames",
+    )
     args = parser.parse_args()
-    model, mae = train_model(args.train_samples, args.val_samples, args.epochs)
+    if args.fine_tune_from is not None:
+        model, mae = fine_tune_from(args.fine_tune_from)
+        DEFAULT_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model.state_dict(), DEFAULT_MODEL_PATH)
+        print(f"saved {DEFAULT_MODEL_PATH} val_mae_px {mae:.2f}")
+        return
+    model, mae = train_model(
+        args.train_samples,
+        args.val_samples,
+        args.epochs,
+        synthetic_path=DEFAULT_SYNTHETIC_MODEL_PATH,
+    )
     DEFAULT_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), DEFAULT_MODEL_PATH)
     print(f"saved {DEFAULT_MODEL_PATH} val_mae_px {mae:.2f}")

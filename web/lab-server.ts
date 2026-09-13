@@ -1,22 +1,38 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 
-const ROUTE = /^\/lab\/save\/([^/]+)$/;
+const ROUTE = /^\/lab\/save\/(?:(synth|grid)\/)?([^/]+)$/;
+const CLIP_ROUTE = /^\/lab\/clip\/([^/?]+)$/;
+const DIRS: Record<string, string> = {
+  recordings: "recordings",
+  synth: "synth",
+  grid: "grid",
+};
 const UNSAFE_NAME = /[^a-zA-Z0-9._-]/g;
 
 export function labServer(): Plugin {
-  const recordDir = join(
-    fileURLToPath(new URL("..", import.meta.url)),
-    "data",
-    "recordings",
-  );
+  const dataDir = join(fileURLToPath(new URL("..", import.meta.url)), "data");
   return {
     name: "kvt-lab-server",
     apply: "serve",
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        const clip = CLIP_ROUTE.exec(req.url ?? "");
+        if (req.method === "GET" && clip) {
+          const name = clip[1].replace(UNSAFE_NAME, "");
+          readFile(join(dataDir, DIRS.recordings, name))
+            .then((body) => {
+              res.setHeader("content-type", "video/webm");
+              res.end(body);
+            })
+            .catch(() => {
+              res.statusCode = 404;
+              res.end();
+            });
+          return;
+        }
         if (req.method !== "POST") {
           next();
           return;
@@ -26,7 +42,8 @@ export function labServer(): Plugin {
           next();
           return;
         }
-        const name = match[1].replace(UNSAFE_NAME, "");
+        const recordDir = join(dataDir, DIRS[match[1] ?? "recordings"]);
+        const name = match[2].replace(UNSAFE_NAME, "");
         if (!name) {
           res.statusCode = 400;
           res.end();

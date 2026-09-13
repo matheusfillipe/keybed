@@ -56,6 +56,7 @@ def test_train_model_with_render_workers() -> None:
 def test_train_model_fine_tunes_on_standin_rec_frames(tmp_path: Path) -> None:
     frames_dir = tmp_path / "frames"
     _write_standin_frames_dir(frames_dir)
+    synthetic_path = tmp_path / "models" / "synthetic.pt"
     model, mae = train_model(
         train_samples=16,
         val_samples=16,
@@ -64,9 +65,11 @@ def test_train_model_fine_tunes_on_standin_rec_frames(tmp_path: Path) -> None:
         workers=0,
         frames_dir=frames_dir,
         fine_tune_steps=2,
+        synthetic_path=synthetic_path,
     )
     assert math.isfinite(mae)
     assert not model.training
+    assert synthetic_path.is_file()
 
 
 def test_train_model_skips_fine_tune_without_rec_frames(tmp_path: Path) -> None:

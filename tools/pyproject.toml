@@ -5,8 +5,11 @@ description = "kvt offline lab: synthetic keyboard data, frame validation, detec
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
+    "onnx>=1.22.0",
+    "onnxscript>=0.7.1",
     "opencv-python-headless==5.0.0.93",
     "torch==2.13.0",
+    "torchvision>=0.24",
 ]
 
 [dependency-groups]
@@ -20,6 +23,7 @@ dev = [
     "bandit==1.9.4",
     "pip-audit==2.10.1",
     "pre-commit==4.6.1",
+    "onnxruntime>=1.29.0",
 ]
 
 [build-system]
@@ -53,14 +57,18 @@ warn_return_any = true
 files = ["src/kvt", "tests"]
 
 [[tool.mypy.overrides]]
-# cv2 ships no type stubs upstream
-module = "cv2"
+# cv2 and onnxruntime ship no type stubs upstream
+module = ["cv2", "onnxruntime", "torchvision.models"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # torch 2.13 ships Tensor.backward untyped in torch/_tensor.py
-module = ["kvt.train", "test_model"]
+module = ["kvt.train", "kvt.trainseg", "test_model"]
 disallow_untyped_calls = false
+
+[tool.deptry.per_rule_ignores]
+# torch.onnx.export loads both at call time; neither is ever imported by name
+DEP002 = ["onnx", "onnxscript"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

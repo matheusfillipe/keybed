@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from kvt.dataset import canonical_quad, orient_quad
+
 _TARGET_WIDTH = 320
 _STRIP_SIZE = (416, 64)
 _STRIP_DST = np.array([[0.0, 0.0], [415.0, 0.0], [415.0, 63.0], [0.0, 63.0]], dtype=np.float32)
@@ -122,18 +124,22 @@ def _candidate_quads(
 def _order_quad(box: np.ndarray) -> np.ndarray:
     total = box.sum(axis=1)
     diagonal = box[:, 1] - box[:, 0]
-    return np.array(
-        [
-            box[int(np.argmin(total))],
-            box[int(np.argmin(diagonal))],
-            box[int(np.argmax(total))],
-            box[int(np.argmax(diagonal))],
-        ],
-        dtype=np.float64,
+    # the strip warp reads the keys along edge 0->1, so a vertical keybed has to be rolled first
+    return canonical_quad(
+        np.array(
+            [
+                box[int(np.argmin(total))],
+                box[int(np.argmin(diagonal))],
+                box[int(np.argmax(total))],
+                box[int(np.argmax(diagonal))],
+            ],
+            dtype=np.float64,
+        )
     )
 
 
 def _verify(image_bgr: np.ndarray, quad_px: np.ndarray) -> Detection | None:
+    quad_px = orient_quad(image_bgr, quad_px)
     strip = cv2.warpPerspective(
         image_bgr,
         cv2.getPerspectiveTransform(quad_px.astype(np.float32), _STRIP_DST),
@@ -431,14 +437,16 @@ def _front_side_sign(
 def _order_pattern_quad(points: np.ndarray) -> np.ndarray:
     total = points.sum(axis=1)
     diagonal = points[:, 1] - points[:, 0]
-    return np.array(
-        [
-            points[int(np.argmin(total))],
-            points[int(np.argmin(diagonal))],
-            points[int(np.argmax(total))],
-            points[int(np.argmax(diagonal))],
-        ],
-        dtype=np.float64,
+    return canonical_quad(
+        np.array(
+            [
+                points[int(np.argmin(total))],
+                points[int(np.argmin(diagonal))],
+                points[int(np.argmax(total))],
+                points[int(np.argmax(diagonal))],
+            ],
+            dtype=np.float64,
+        )
     )
 
 
@@ -481,16 +489,16 @@ def _find_pattern_pass(
         return None
     period, sign, phase, hits, score = fit
     solves = []
-    for mirrored in (False, True):
-        values = -s if mirrored else s
+    for flipped in (False, True):
+        values = -s if flipped else s
         s_ref = float(values.min())
         solved = _solve_pattern(values, period, sign, phase, s_ref)
         if solved is not None:
-            solves.append((solved[4], values, s_ref, solved))
+            solves.append((solved[4], flipped, values, s_ref, solved))
     if not solves:
         return None
     solves.sort(key=lambda item: item[0])
-    _, values, s_ref, solved = solves[0]
+    _, mirrored, values, s_ref, solved = solves[0]
     anchor, w, j, k = solved[:4]
     if hits / max(1, len(np.unique(k))) < _MIN_HITS_PER_OCTAVE:
         return None

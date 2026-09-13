@@ -1,11 +1,12 @@
 import { findHomography, type Point } from "./homography";
-import { HIGH_PITCH, isBlack, keyRect, LOW_PITCH } from "./keys";
+import { WHITE_COUNT } from "./keys";
 
 export const WHITE_KEY_MM = 23.5;
-export const KEYBED_DEPTH_MM = 150;
-export const WHITE_KEY_COUNT = 52;
+// visible key depth of the instrument in front of the camera, measured from its labelled
+// frames: the pose residual over 16 snaps bottoms out at a span-to-depth ratio of 7.2
+export const KEYBED_DEPTH_MM = 118;
+export const WHITE_KEY_COUNT = WHITE_COUNT;
 export const DEPTH_UNITS = KEYBED_DEPTH_MM / WHITE_KEY_MM;
-const BLACK_DEPTH_RATIO = 0.62;
 const SCAN_SAMPLES = 200;
 const GOLDEN_ITERATIONS = 100;
 const GOLDEN_RATIO = (Math.sqrt(5) - 1) / 2;
@@ -18,17 +19,26 @@ export interface PlanePose {
   residual: number;
 }
 
-export interface GridGeometry {
-  separators: [Point, Point][];
-  blackQuads: Point[][];
-}
-
 const WORLD_CORNERS: Point[] = [
   { x: 0, y: 0 },
   { x: WHITE_KEY_COUNT, y: 0 },
   { x: WHITE_KEY_COUNT, y: DEPTH_UNITS },
   { x: 0, y: DEPTH_UNITS },
 ];
+
+function edgeLength(quad: Point[], index: number): number {
+  return Math.hypot(quad[index].x - quad[0].x, quad[index].y - quad[0].y);
+}
+
+function roll(quad: Point[], by: number): Point[] {
+  return quad.map((_, i) => quad[(i + by) % quad.length]);
+}
+
+// WORLD_CORNERS puts the 52 white keys on edge 0->1, so an image quad has to agree before it solves.
+// The remaining 180 degree choice is the dragger's: handle 1 to 2 runs along the black keys.
+export function canonicalQuad(quad: Point[]): Point[] {
+  return edgeLength(quad, 1) >= edgeLength(quad, 3) ? quad : roll(quad, 1);
+}
 
 function inverseCalibrationHomography(
   focal: number,
@@ -73,6 +83,19 @@ function orthogonalityResidual(r1: number[], r2: number[]): number {
   return Math.abs(dot) + Math.abs(1 - norm(cross(r1, r2)));
 }
 
+// a rotation's columns are orthogonal AND the same length. The length test is what refuses a
+// frontal view of the wrong aspect, where orthogonality alone is satisfied by any rectangle.
+function poseResidual(b: number[][]): number {
+  const c0 = column(b, 0);
+  const c1 = column(b, 1);
+  const n0 = norm(c0);
+  const n1 = norm(c1);
+  return (
+    orthogonalityResidual(unit(c0), unit(c1)) +
+    Math.abs(1 - Math.min(n0, n1) / Math.max(n0, n1))
+  );
+}
+
 function goldenSection(
   fn: (f: number) => number,
   lo: number,
@@ -107,12 +130,11 @@ export function estimateFocal(
   width: number,
   height: number,
 ): number {
-  const h = findHomography(WORLD_CORNERS, imageCorners);
+  const h = findHomography(WORLD_CORNERS, canonicalQuad(imageCorners));
   const lo = 0.3 * width;
   const hi = 3 * width;
   const residual = (f: number): number => {
-    const b = inverseCalibrationHomography(f, width, height, h);
-    return orthogonalityResidual(unit(column(b, 0)), unit(column(b, 1)));
+    return poseResidual(inverseCalibrationHomography(f, width, height, h));
   };
   const step = (hi - lo) / SCAN_SAMPLES;
   let bestFocal = lo;
@@ -135,7 +157,7 @@ export function solvePose(
   width: number,
   height: number,
 ): PlanePose {
-  const h = findHomography(WORLD_CORNERS, imageCorners);
+  const h = findHomography(WORLD_CORNERS, canonicalQuad(imageCorners));
   const focal = estimateFocal(imageCorners, width, height);
   const b = inverseCalibrationHomography(focal, width, height, h);
   const scale = norm(column(b, 0));
@@ -156,7 +178,7 @@ export function solvePose(
       b[2][2] * metricScale,
     ],
     worldWidthMm: WHITE_KEY_COUNT * WHITE_KEY_MM,
-    residual: orthogonalityResidual(r1, r2),
+    residual: poseResidual(b),
   };
 }
 
@@ -176,35 +198,4 @@ export function projectPoint(
     x: width / 2 + (pose.focal * (r[0][0] * xmm + r[0][1] * ymm + t[0])) / zc,
     y: height / 2 + (pose.focal * (r[1][0] * xmm + r[1][1] * ymm + t[1])) / zc,
   };
-}
-
-export function projectGrid(
-  pose: PlanePose,
-  width: number,
-  height: number,
-): GridGeometry {
-  const separators: [Point, Point][] = [];
-  for (let i = 1; i < WHITE_KEY_COUNT; i += 1) {
-    separators.push([
-      projectPoint(pose, i, 0, width, height),
-      projectPoint(pose, i, DEPTH_UNITS, width, height),
-    ]);
-  }
-  const blackBottomV = BLACK_DEPTH_RATIO * DEPTH_UNITS;
-  const blackQuads: Point[][] = [];
-  for (let pitch = LOW_PITCH; pitch <= HIGH_PITCH; pitch += 1) {
-    if (!isBlack(pitch)) {
-      continue;
-    }
-    const rect = keyRect(pitch);
-    const u0 = rect.u0 * WHITE_KEY_COUNT;
-    const u1 = rect.u1 * WHITE_KEY_COUNT;
-    blackQuads.push([
-      projectPoint(pose, u0, 0, width, height),
-      projectPoint(pose, u1, 0, width, height),
-      projectPoint(pose, u1, blackBottomV, width, height),
-      projectPoint(pose, u0, blackBottomV, width, height),
-    ]);
-  }
-  return { separators, blackQuads };
 }

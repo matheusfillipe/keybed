@@ -46,11 +46,15 @@ class KeybedNet(nn.Module):
 
 
 def decode_heatmaps(heatmaps: torch.Tensor) -> torch.Tensor:
-    height, width = heatmaps.shape[-2:]
-    weights = torch.softmax(heatmaps.flatten(2), dim=-1)
-    xs = torch.arange(width, dtype=heatmaps.dtype, device=heatmaps.device).repeat(height)
-    ys = torch.arange(height, dtype=heatmaps.dtype, device=heatmaps.device).repeat_interleave(width)
-    expected = torch.stack((weights @ xs, weights @ ys), dim=-1)
+    batch, channels, height, width = heatmaps.shape
+    # a flat coordinate grid trips the onnx exporter's repeat_interleave, so we take marginals
+    weights = torch.softmax(heatmaps.flatten(2), dim=-1).reshape(batch, channels, height, width)
+    xs = torch.arange(width, dtype=heatmaps.dtype, device=heatmaps.device)
+    ys = torch.arange(height, dtype=heatmaps.dtype, device=heatmaps.device)
+    expected = torch.stack(
+        ((weights.sum(dim=2) * xs).sum(dim=-1), (weights.sum(dim=3) * ys).sum(dim=-1)),
+        dim=-1,
+    )
     return expected.flatten(1) / float(width - 1)
 
 
@@ -115,5 +119,68 @@ def load_model(path: Path) -> KeybedNet:
     model = KeybedNet()
     state = torch.load(path, map_location="cpu", weights_only=True)
     model.load_state_dict(state)
+    model.eval()
+    return model
+
+
+MASK_SIZE = 144
+
+
+class KeybedSegNet(nn.Module):
+    """Predicts where the keybed is; geometry finds the corners, not learned channels."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(1, 16, 3, stride=2, padding=1),
+            nn.GroupNorm(4, 16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.Conv2d(64, 96, 3, stride=2, padding=1),
+            nn.GroupNorm(8, 96),
+            nn.ReLU(),
+        )
+        self.head = nn.Sequential(
+            nn.ConvTranspose2d(96, 64, 4, stride=2, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 16, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(16, 1, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        logits: torch.Tensor = self.head(self.body(x))
+        return logits
+
+
+def mask_targets(masks: np.ndarray) -> np.ndarray:
+    out = np.empty((masks.shape[0], MASK_SIZE, MASK_SIZE), dtype=np.float32)
+    for i, mask in enumerate(masks):
+        out[i] = cv2.resize(mask, (MASK_SIZE, MASK_SIZE), interpolation=cv2.INTER_AREA) / 255.0
+    return out
+
+
+def predict_mask(model: KeybedSegNet, image_rgb: np.ndarray) -> np.ndarray:
+    tensor = torch.from_numpy(preprocess(image_rgb)).unsqueeze(0).unsqueeze(0)
+    model.eval()
+    with torch.no_grad():
+        logits = model(tensor)
+    probability = torch.sigmoid(logits)[0, 0].numpy()
+    height, width = image_rgb.shape[:2]
+    return cv2.resize(probability, (width, height), interpolation=cv2.INTER_LINEAR)
+
+
+def load_seg_model(path: Path) -> KeybedSegNet:
+    model = KeybedSegNet()
+    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
     model.eval()
     return model

@@ -7,8 +7,13 @@
 
 # recordings and datasets (personal data, local only)
 data/
+docs/
 *.mp4
 *.mkv
+*.webm
+*.png
+*.jpg
+*.jpeg
 exports/
 
 # python
@@ -34,4 +39,9 @@ node_modules/
 
 # tooling local state
 .playwright-mcp/
-models/
+
+# weights are distributed on their own, never through git; the CC-BY keybed mesh ships here
+# because the generator page needs it to render at all
+web/public/*.onnx
+web/public/*.onnx.data
+!web/public/models/
