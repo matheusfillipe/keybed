@@ -3,21 +3,22 @@ import {
   type HandLandmarkerResult,
   type ImageSource,
 } from "@mediapipe/tasks-vision";
-import wasmLoaderUrl from "@mediapipe/tasks-vision/vision_wasm_internal.js?url";
-import wasmBinaryUrl from "@mediapipe/tasks-vision/vision_wasm_internal.wasm?url";
-
-const MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+import { handModelUrl, type RuntimeAssets } from "./assets";
 
 export interface HandTracker {
   detect(frame: ImageSource, timestampMs: number): HandLandmarkerResult;
 }
 
-export async function createHandTracker(): Promise<HandTracker> {
+export async function createHandTracker(
+  assets: RuntimeAssets,
+): Promise<HandTracker> {
   const handLandmarker = await HandLandmarker.createFromOptions(
-    { wasmLoaderPath: wasmLoaderUrl, wasmBinaryPath: wasmBinaryUrl },
     {
-      baseOptions: { modelAssetPath: MODEL_URL },
+      wasmLoaderPath: assets.mediapipeLoader,
+      wasmBinaryPath: assets.mediapipeWasm,
+    },
+    {
+      baseOptions: { modelAssetPath: handModelUrl },
       numHands: 2,
       runningMode: "VIDEO",
     },

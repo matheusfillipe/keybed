@@ -5,11 +5,7 @@ import {
   type ImageSegmenterResult,
   type ImageSource,
 } from "@mediapipe/tasks-vision";
-import wasmLoaderUrl from "@mediapipe/tasks-vision/vision_wasm_internal.js?url";
-import wasmBinaryUrl from "@mediapipe/tasks-vision/vision_wasm_internal.wasm?url";
-
-const MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite";
+import { type RuntimeAssets, skinModelUrl } from "./assets";
 
 // selfie_multiclass categories: 0 background, 1 hair, 2 body skin, 3 face skin, 4 clothes, 5 other
 const BODY_SKIN = 2;
@@ -19,12 +15,18 @@ export interface SkinSegmenter {
   close(): void;
 }
 
-export async function createSkinSegmenter(): Promise<SkinSegmenter> {
+export async function createSkinSegmenter(
+  assets: RuntimeAssets,
+): Promise<SkinSegmenter> {
   const vision = await FilesetResolver.forVisionTasks();
   const segmenter = await ImageSegmenter.createFromOptions(
-    { ...vision, wasmLoaderPath: wasmLoaderUrl, wasmBinaryPath: wasmBinaryUrl },
     {
-      baseOptions: { modelAssetPath: MODEL_URL },
+      ...vision,
+      wasmLoaderPath: assets.mediapipeLoader,
+      wasmBinaryPath: assets.mediapipeWasm,
+    },
+    {
+      baseOptions: { modelAssetPath: skinModelUrl },
       runningMode: "VIDEO",
       outputCategoryMask: true,
       outputConfidenceMasks: false,

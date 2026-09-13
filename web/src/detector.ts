@@ -1,5 +1,5 @@
-import wasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 import * as ort from "onnxruntime-web/wasm";
+import type { RuntimeAssets } from "./assets";
 import { quadFromMask } from "./fitquad";
 import type { Point } from "./homography";
 import {
@@ -194,9 +194,10 @@ function meanInside(
 }
 
 export async function createDetector(
+  assets: RuntimeAssets,
   url: string = MODEL_URL,
 ): Promise<Detector> {
-  ort.env.wasm.wasmPaths = { wasm: wasmUrl };
+  ort.env.wasm.wasmPaths = { wasm: assets.ortWasm };
   ort.env.wasm.numThreads = THREADS;
   const session = await ort.InferenceSession.create(url, {
     executionProviders: ["wasm"],

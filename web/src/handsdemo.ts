@@ -9,6 +9,7 @@ import {
 } from "./handmask";
 import { createHandTracker, type HandTracker } from "./hands";
 import { styleButton } from "./hud";
+import { viteAssets } from "./viteassets";
 
 const MAX_WIDTH = 640;
 const BOX_PADDING = 0.18;
@@ -224,10 +225,10 @@ async function boot(): Promise<void> {
   panel(state, status);
 
   status.textContent = "loading models";
-  const segmenter = await createSkinSegmenter();
+  const segmenter = await createSkinSegmenter(viteAssets);
   let tracker: HandTracker | null = null;
   try {
-    tracker = await createHandTracker();
+    tracker = await createHandTracker(viteAssets);
   } catch (err) {
     status.textContent = `hand model failed: ${err instanceof Error ? err.message : String(err)}`;
   }

@@ -1,0 +1,18 @@
+{
+  "name": "keybed",
+  "version": "0.1.0",
+  "description": "Finds a piano keybed in a camera image and solves its 3D pose",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./web/src/index.ts"
+  },
+  "files": [
+    "web/src"
+  ],
+  "peerDependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "onnxruntime-web": "^1.29.0",
+    "three": "^0.185.1"
+  }
+}

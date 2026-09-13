@@ -17,6 +17,7 @@ import {
   setKeybedDepth,
 } from "./rectfit";
 import { createSteady } from "./steady";
+import { viteAssets } from "./viteassets";
 
 const DETECT_INTERVAL_MS = 250;
 const MANUAL_COLOR = "rgba(56,189,248,0.9)";
@@ -452,7 +453,7 @@ async function boot(): Promise<void> {
   try {
     const hud = createHud();
     hud.status("model", "loading");
-    const loading = createDetector().then(
+    const loading = createDetector(viteAssets).then(
       (detector) => {
         hud.status("model", "ready");
         return detector;
@@ -472,7 +473,7 @@ async function boot(): Promise<void> {
       () => hud.state.corners,
       () => videoBox(video, canvas),
     );
-    const tracker = await createHandTracker().catch(() => null);
+    const tracker = await createHandTracker(viteAssets).catch(() => null);
     const labelCorners = startLoop(
       video,
       canvas,
