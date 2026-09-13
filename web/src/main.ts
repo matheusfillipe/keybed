@@ -6,6 +6,7 @@ import { createHandTracker, type HandTracker } from "./hands";
 import type { Point } from "./homography";
 import { createHud, type Hud } from "./hud";
 import { createLab } from "./lab";
+import { lockKeybed } from "./lock";
 import { facing } from "./orient";
 import { canonicalQuad, solvePose, WHITE_KEY_COUNT } from "./pose";
 import { checkQuad } from "./quad";
@@ -193,52 +194,19 @@ function startLoop(
           );
           return;
         }
-        // the fit's corner order says nothing about which long edge is the back; the
-        // picture does: the black keys are darker than the white key fronts, so a quad
-        // whose "back" band is the lighter one is turned around
-        const asDetected = facing(
-          detection.gray,
-          INPUT_SIZE,
-          detection.inputQuad ?? detection.quad,
-        );
-        const reversed = asDetected.margin < 0;
-        const turned = (q: Point[]): Point[] =>
-          reversed ? [q[2], q[3], q[0], q[1]] : q;
-        const facts = reversed
-          ? facing(
-              detection.gray,
-              INPUT_SIZE,
-              turned(detection.inputQuad ?? detection.quad),
-            )
-          : asDetected;
-        const framed = canonicalQuad(turned(canonicalQuad(detection.quad)));
-        // a quad that is not keybed shaped is a miss. Leaving the last good one on screen
-        // reads as a frozen detection, so a run of misses clears it instead.
-        const shape = checkQuad(framed);
-        const residual = shape.usable
-          ? solvePose(
-              framed.map((p) => ({
-                x: p.x * video.videoWidth,
-                y: p.y * video.videoHeight,
-              })),
-              video.videoWidth,
-              video.videoHeight,
-            ).residual
-          : 0;
-        // a box the mask does not fill, or without the black-key stripe, is a guess at a
-        // keybed and is not shown: nothing on screen beats the most likely wrong thing
-        const unsure = detection.confidence < MIN_CONFIDENCE || !facts.onKeybed;
-        if (!shape.usable || residual > MAX_POSE_RESIDUAL || unsure) {
+        const held = lockKeybed(detection, {
+          width: video.videoWidth,
+          height: video.videoHeight,
+        });
+        if (!held.held) {
           labLog({
             t: performance.now(),
             ms: detection.latencyMs,
             still: detection.still,
             motion: detection.motion,
-            raw: framed,
+            raw: detection.quad,
             drawn: null,
-            note: shape.usable
-              ? `residual ${residual.toFixed(2)}`
-              : shape.reason,
+            note: held.reason,
           });
           misses += 1;
           if (misses >= MISSES_BEFORE_CLEAR) {
@@ -246,20 +214,15 @@ function startLoop(
             steady.reset();
           }
           hud.status("detect", `${detection.latencyMs.toFixed(1)} ms`);
-          hud.status(
-            "keybed",
-            `${
-              !shape.usable
-                ? shape.reason
-                : residual > MAX_POSE_RESIDUAL
-                  ? `not a rectangle in 3d (${residual.toFixed(1)})`
-                  : detection.confidence < MIN_CONFIDENCE
-                    ? `mask ${(detection.confidence * 100).toFixed(0)}% inside, not a keybed`
-                    : "no black-key stripe, not a keybed"
-            } (${misses} missed)`,
-          );
+          hud.status("keybed", `${held.reason} (${misses} missed)`);
           return;
         }
+        const framed = held.quad;
+        const facts = {
+          quad: held.inputQuad,
+          margin: held.margin,
+          onKeybed: true,
+        };
         misses = 0;
         lock = {
           quad: steady.accept(framed, detection.still),
