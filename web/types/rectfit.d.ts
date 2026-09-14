@@ -1,7 +1,4 @@
 import { type Point } from "./homography";
-export declare function setKeybedDepth(units: number): void;
-export declare function setCameraFocal(fraction: number): void;
-export declare function cameraFocalFraction(): number;
 export declare function estimateFocalFraction(quad: Point[], width: number, height: number): number;
 export declare function keybedDepthFromQuad(quad: Point[], focal: number, cx: number, cy: number): number;
 export declare const FOCAL_SCAN: number[];

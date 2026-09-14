@@ -30,6 +30,13 @@ export {
   SPAN,
 } from "./keybed3d";
 export {
+  isBlack,
+  type KeyUnits,
+  keyRect,
+  keyUnits,
+  whiteIndex,
+} from "./keys";
+export {
   type Lock,
   lockKeybed,
   maxPoseResidual,
@@ -43,6 +50,19 @@ export {
   measureCorners,
 } from "./measure";
 export { type Facing, facing } from "./orient";
-export { estimateFocal, type PlanePose, solvePose } from "./pose";
+export {
+  cameraPosition,
+  canonicalQuad,
+  DEPTH_UNITS,
+  estimateFocal,
+  keybedDepth,
+  type PlanePose,
+  projectPoint,
+  projectSpace,
+  solvePose,
+  spaceDepth,
+  type Vector3,
+  WHITE_KEY_COUNT,
+} from "./pose";
 export { checkQuad, type QuadCheck } from "./quad";
 export { createSteady, type Steady } from "./steady";

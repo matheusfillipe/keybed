@@ -11,6 +11,14 @@ const SCAN_SAMPLES = 200;
 const GOLDEN_ITERATIONS = 100;
 const GOLDEN_RATIO = (Math.sqrt(5) - 1) / 2;
 
+/** A point of the keybed's own space, in white-key widths: u along the keys, v
+ * across their depth from the player's edge, w standing off the plane. */
+export interface Vector3 {
+  u: number;
+  v: number;
+  w: number;
+}
+
 export interface PlanePose {
   focal: number;
   rotation: number[][];
@@ -19,12 +27,41 @@ export interface PlanePose {
   residual: number;
 }
 
-const WORLD_CORNERS: Point[] = [
-  { x: 0, y: 0 },
-  { x: WHITE_KEY_COUNT, y: 0 },
-  { x: WHITE_KEY_COUNT, y: DEPTH_UNITS },
-  { x: 0, y: DEPTH_UNITS },
-];
+// the keybed's depth in white-key widths, the default until the user measures it from a
+// top view, the one view where aspect isn't tangled with focal and pose
+let depthUnits = DEPTH_UNITS;
+
+export function setKeybedDepth(units: number): void {
+  depthUnits = units;
+}
+
+export function keybedDepth(): number {
+  return depthUnits;
+}
+
+// the camera's focal as a fraction of the frame width, a webcam's 65 degree lens until the
+// user measures it from an oblique view, where the two vanishing points fix it
+let cameraFocal = 0.75;
+
+export function setCameraFocal(fraction: number): void {
+  cameraFocal = fraction;
+}
+
+export function cameraFocalFraction(): number {
+  return cameraFocal;
+}
+
+/** The keybed as the fit and the pose both see it, so a depth the user measures
+ * moves them together. Corner 0 to 1 spans the keys and 1 to 2 the depth, with
+ * the player at the near edge. */
+export function worldCorners(): Point[] {
+  return [
+    { x: 0, y: 0 },
+    { x: WHITE_KEY_COUNT, y: 0 },
+    { x: WHITE_KEY_COUNT, y: depthUnits },
+    { x: 0, y: depthUnits },
+  ];
+}
 
 function edgeLength(quad: Point[], index: number): number {
   return Math.hypot(quad[index].x - quad[0].x, quad[index].y - quad[0].y);
@@ -34,7 +71,7 @@ function roll(quad: Point[], by: number): Point[] {
   return quad.map((_, i) => quad[(i + by) % quad.length]);
 }
 
-// WORLD_CORNERS puts the 52 white keys on edge 0->1, so an image quad has to agree before it solves.
+// The world frame puts the white keys on edge 0->1, so an image quad has to agree before it solves.
 // The remaining 180 degree choice is the dragger's: handle 1 to 2 runs along the black keys.
 export function canonicalQuad(quad: Point[]): Point[] {
   return edgeLength(quad, 1) >= edgeLength(quad, 3) ? quad : roll(quad, 1);
@@ -130,7 +167,7 @@ export function estimateFocal(
   width: number,
   height: number,
 ): number {
-  const h = findHomography(WORLD_CORNERS, canonicalQuad(imageCorners));
+  const h = findHomography(worldCorners(), canonicalQuad(imageCorners));
   const lo = 0.3 * width;
   const hi = 3 * width;
   const residual = (f: number): number => {
@@ -157,7 +194,7 @@ export function solvePose(
   width: number,
   height: number,
 ): PlanePose {
-  const h = findHomography(WORLD_CORNERS, canonicalQuad(imageCorners));
+  const h = findHomography(worldCorners(), canonicalQuad(imageCorners));
   const focal = estimateFocal(imageCorners, width, height);
   const b = inverseCalibrationHomography(focal, width, height, h);
   const scale = norm(column(b, 0));
@@ -182,6 +219,31 @@ export function solvePose(
   };
 }
 
+/** Where a point of the keybed's own space lands in the picture. u runs along
+ * the keys and v across their depth, both in white-key widths, and w stands off
+ * the plane, which is where anything drawn over the instrument lives. */
+export function projectSpace(
+  pose: PlanePose,
+  u: number,
+  v: number,
+  w: number,
+  width: number,
+  height: number,
+): Point {
+  const xmm = u * WHITE_KEY_MM;
+  const ymm = v * WHITE_KEY_MM;
+  const zmm = w * WHITE_KEY_MM;
+  const r = pose.rotation;
+  const t = pose.translation;
+  const at = (row: number): number =>
+    r[row][0] * xmm + r[row][1] * ymm + r[row][2] * zmm + t[row];
+  const zc = at(2);
+  return {
+    x: width / 2 + (pose.focal * at(0)) / zc,
+    y: height / 2 + (pose.focal * at(1)) / zc,
+  };
+}
+
 export function projectPoint(
   pose: PlanePose,
   u: number,
@@ -189,13 +251,33 @@ export function projectPoint(
   width: number,
   height: number,
 ): Point {
-  const xmm = u * WHITE_KEY_MM;
-  const ymm = v * WHITE_KEY_MM;
+  return projectSpace(pose, u, v, 0, width, height);
+}
+
+/** How far in front of the camera a point of the keybed's space sits, in
+ * white-key widths. Anything at or behind zero has no picture to be drawn in. */
+export function spaceDepth(
+  pose: PlanePose,
+  u: number,
+  v: number,
+  w: number,
+): number {
+  const r = pose.rotation;
+  return (
+    (r[2][0] * u * WHITE_KEY_MM +
+      r[2][1] * v * WHITE_KEY_MM +
+      r[2][2] * w * WHITE_KEY_MM +
+      pose.translation[2]) /
+    WHITE_KEY_MM
+  );
+}
+
+/** Where the camera itself stands in the keybed's space, in white-key widths.
+ * What is drawn above the keys is aimed at this. */
+export function cameraPosition(pose: PlanePose): Vector3 {
   const r = pose.rotation;
   const t = pose.translation;
-  const zc = r[2][0] * xmm + r[2][1] * ymm + t[2];
-  return {
-    x: width / 2 + (pose.focal * (r[0][0] * xmm + r[0][1] * ymm + t[0])) / zc,
-    y: height / 2 + (pose.focal * (r[1][0] * xmm + r[1][1] * ymm + t[1])) / zc,
-  };
+  const at = (col: number): number =>
+    -(r[0][col] * t[0] + r[1][col] * t[1] + r[2][col] * t[2]) / WHITE_KEY_MM;
+  return { u: at(0), v: at(1), w: at(2) };
 }

@@ -7,7 +7,12 @@
 // thin end. Port of tools/src/kvt/rectfit.py, measured there on the pose grid and the clips.
 
 import { findHomography, type Point } from "./homography";
-import { canonicalQuad, DEPTH_UNITS, WHITE_KEY_COUNT } from "./pose";
+import {
+  cameraFocalFraction,
+  canonicalQuad,
+  keybedDepth,
+  WHITE_KEY_COUNT,
+} from "./pose";
 import {
   bilinear,
   blur,
@@ -15,26 +20,6 @@ import {
   SEARCH_PX,
   SEARCH_STEP,
 } from "./refineedges";
-
-// the keybed's depth in white-key widths, the default until the user measures it from a
-// top view, the one view where aspect isn't tangled with focal and pose
-let depthUnits = DEPTH_UNITS;
-
-export function setKeybedDepth(units: number): void {
-  depthUnits = units;
-}
-
-// the camera's focal as a fraction of the frame width, a webcam's 65 degree lens until the
-// user measures it from an oblique view, where the two vanishing points fix it
-let cameraFocal = 0.75;
-
-export function setCameraFocal(fraction: number): void {
-  cameraFocal = fraction;
-}
-
-export function cameraFocalFraction(): number {
-  return cameraFocal;
-}
 
 // the focal at which the quad is a rectangle of the measured shape: the homography's
 // columns must be orthogonal and equal length; flat on a top view, sharp on an oblique one
@@ -75,8 +60,8 @@ function world(): number[][] {
   return [
     [0, 0, 0],
     [WHITE_KEY_COUNT, 0, 0],
-    [WHITE_KEY_COUNT, depthUnits, 0],
-    [0, depthUnits, 0],
+    [WHITE_KEY_COUNT, keybedDepth(), 0],
+    [0, keybedDepth(), 0],
   ];
 }
 

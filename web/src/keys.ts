@@ -10,6 +10,11 @@ export interface KeyRect {
   u1: number;
 }
 
+export interface KeyUnits {
+  from: number;
+  to: number;
+}
+
 const WHITE_PITCHES: number[] = [];
 for (let pitch = LOW_PITCH; pitch <= HIGH_PITCH; pitch += 1) {
   if (!isBlack(pitch)) {
@@ -27,13 +32,24 @@ export function whiteIndex(pitch: number): number {
   return 7 * Math.floor(pitch / 12) - 12 + WHITE_PC_INDEX[pitch % 12];
 }
 
-export function keyRect(pitch: number): KeyRect {
+/** Where a key sits on any keyboard, in white-key widths from the same origin
+ * `whiteIndex` counts from. The black keys carry the offsets a real instrument
+ * has, where a black key straddles the join between two whites rather than
+ * sitting over the middle of it. */
+export function keyUnits(pitch: number): KeyUnits {
   const offset = BLACK_OFFSETS[pitch % 12];
   if (offset >= 0) {
-    const base = 7 * Math.floor(pitch / 12) - 12 - FIRST_WHITE;
-    const u0 = (base + offset) / WHITE_COUNT;
-    return { u0, u1: u0 + BLACK_WIDTH / WHITE_COUNT };
+    const from = 7 * Math.floor(pitch / 12) - 12 + offset;
+    return { from, to: from + BLACK_WIDTH };
   }
-  const index = whiteIndex(pitch) - FIRST_WHITE;
-  return { u0: index / WHITE_COUNT, u1: (index + 1) / WHITE_COUNT };
+  const from = whiteIndex(pitch);
+  return { from, to: from + 1 };
+}
+
+export function keyRect(pitch: number): KeyRect {
+  const units = keyUnits(pitch);
+  return {
+    u0: (units.from - FIRST_WHITE) / WHITE_COUNT,
+    u1: (units.to - FIRST_WHITE) / WHITE_COUNT,
+  };
 }

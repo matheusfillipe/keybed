@@ -2,10 +2,10 @@ import * as ort from "onnxruntime-web/wasm";
 import type { RuntimeAssets } from "./assets";
 import { quadFromMask } from "./fitquad";
 import type { Point } from "./homography";
+import { cameraFocalFraction } from "./pose";
 import {
   boundaryPoints,
   boundaryResidual,
-  cameraFocalFraction,
   fitRectangle,
   lastDecline,
   principalBox,

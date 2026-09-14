@@ -9,15 +9,15 @@ import { createLab } from "./lab";
 import { lockKeybed } from "./lock";
 import { depthInKeyWidths, measureCorners } from "./measure";
 import { facing } from "./orient";
-import { canonicalQuad, solvePose } from "./pose";
-import { checkQuad } from "./quad";
 import {
   cameraFocalFraction,
-  estimateFocalFraction,
-  keybedDepthFromQuad,
+  canonicalQuad,
   setCameraFocal,
   setKeybedDepth,
-} from "./rectfit";
+  solvePose,
+} from "./pose";
+import { checkQuad } from "./quad";
+import { estimateFocalFraction, keybedDepthFromQuad } from "./rectfit";
 import { createSteady } from "./steady";
 import { viteAssets } from "./viteassets";
 

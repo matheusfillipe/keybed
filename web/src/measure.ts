@@ -1,13 +1,12 @@
 import type { Point } from "./homography";
-import { WHITE_KEY_COUNT } from "./pose";
-import { checkQuad } from "./quad";
 import {
   cameraFocalFraction,
-  estimateFocalFraction,
-  keybedDepthFromQuad,
   setCameraFocal,
   setKeybedDepth,
-} from "./rectfit";
+  WHITE_KEY_COUNT,
+} from "./pose";
+import { checkQuad } from "./quad";
+import { estimateFocalFraction, keybedDepthFromQuad } from "./rectfit";
 
 /** Two ends this unequal mean the camera is looking along the keybed rather
  * than down at it. */
