@@ -1,4 +1,4 @@
-import * as ort from "onnxruntime-web/wasm";
+import * as ort from "onnxruntime-web/webgpu";
 import type { RuntimeAssets } from "./assets";
 import { quadFromMask } from "./fitquad";
 import type { Point } from "./homography";
@@ -38,7 +38,8 @@ export const MASK_THRESHOLD = 0.5;
 // edges are refined on an unsquashed frame so each edge normal is really perpendicular,
 // capped at the width the 10 px search radius was measured on
 const REFINE_WIDTH = 640;
-// COEP would be needed for ORT threads and would also block the cross-origin hand landmarker model
+// COEP would be needed for ORT threads and would also block the cross-origin hand landmarker
+// model, so the wasm build stays single threaded and the work goes to the GPU instead
 const THREADS = 1;
 // when nothing in the frame moves, the mask is averaged over this many detections before it
 // is fitted: measured on static clips it cuts corner jitter 5-12x and jumps 19 -> 4
@@ -199,8 +200,11 @@ export async function createDetector(
 ): Promise<Detector> {
   ort.env.wasm.wasmPaths = { wasm: assets.ortWasm };
   ort.env.wasm.numThreads = THREADS;
+  // WebGPU where the browser has it, which is most of them, and the wasm build
+  // behind it for the rest. A segmentation model is exactly the shape of work a
+  // GPU answers in a fraction of the time a single wasm thread takes.
   const session = await ort.InferenceSession.create(url, {
-    executionProviders: ["wasm"],
+    executionProviders: ["webgpu", "wasm"],
     graphOptimizationLevel: "all",
   });
 

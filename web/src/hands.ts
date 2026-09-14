@@ -18,7 +18,7 @@ export async function createHandTracker(
       wasmBinaryPath: assets.mediapipeWasm,
     },
     {
-      baseOptions: { modelAssetPath: handModelUrl },
+      baseOptions: { modelAssetPath: handModelUrl, delegate: "GPU" },
       numHands: 2,
       runningMode: "VIDEO",
     },

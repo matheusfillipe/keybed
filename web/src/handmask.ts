@@ -19,18 +19,26 @@ export async function createSkinSegmenter(
   assets: RuntimeAssets,
 ): Promise<SkinSegmenter> {
   const vision = await FilesetResolver.forVisionTasks();
-  const segmenter = await ImageSegmenter.createFromOptions(
-    {
-      ...vision,
-      wasmLoaderPath: assets.mediapipeLoader,
-      wasmBinaryPath: assets.mediapipeWasm,
-    },
-    {
-      baseOptions: { modelAssetPath: skinModelUrl },
-      runningMode: "VIDEO",
-      outputCategoryMask: true,
-      outputConfidenceMasks: false,
-    },
+  const files = {
+    ...vision,
+    wasmLoaderPath: assets.mediapipeLoader,
+    wasmBinaryPath: assets.mediapipeWasm,
+  };
+  const options = {
+    runningMode: "VIDEO" as const,
+    outputCategoryMask: true,
+    outputConfidenceMasks: false,
+  };
+  // The GPU runs this model in a fraction of the time the CPU delegate takes,
+  // and a machine without one still has the CPU delegate behind it.
+  const segmenter = await ImageSegmenter.createFromOptions(files, {
+    ...options,
+    baseOptions: { modelAssetPath: skinModelUrl, delegate: "GPU" },
+  }).catch(() =>
+    ImageSegmenter.createFromOptions(files, {
+      ...options,
+      baseOptions: { modelAssetPath: skinModelUrl, delegate: "CPU" },
+    }),
   );
   return {
     segment: (video, timestampMs) =>
