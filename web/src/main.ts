@@ -7,8 +7,9 @@ import type { Point } from "./homography";
 import { createHud, type Hud } from "./hud";
 import { createLab } from "./lab";
 import { lockKeybed } from "./lock";
+import { depthInKeyWidths, measureCorners } from "./measure";
 import { facing } from "./orient";
-import { canonicalQuad, solvePose, WHITE_KEY_COUNT } from "./pose";
+import { canonicalQuad, solvePose } from "./pose";
 import { checkQuad } from "./quad";
 import {
   cameraFocalFraction,
@@ -280,6 +281,13 @@ function startLoop(
   // and kept in this browser: the shape from a view from above, where the aspect is plain
   // to see, the lens from an oblique view, where the convergence fixes it. Which one a
   // press measures is decided by how unequal the two ends are.
+  const remember = (key: string, value: number): void => {
+    try {
+      localStorage.setItem(key, String(value));
+    } catch {
+      // storage can be blocked; the measurement holds for this session
+    }
+  };
   try {
     const depth = localStorage.getItem(DEPTH_KEY);
     if (depth) {
@@ -293,59 +301,28 @@ function startLoop(
     // storage can be blocked; the defaults stand
   }
   hud.onMeasure(() => {
-    const px = orientedManual().map((p) => ({
-      x: p.x * video.videoWidth,
-      y: p.y * video.videoHeight,
-    }));
-    if (!checkQuad(orientedManual()).usable) {
-      hud.status("keybed", "put the corners on the keybed, nothing measured");
+    const measured = measureCorners(orientedManual(), {
+      width: video.videoWidth,
+      height: video.videoHeight,
+    });
+    if (measured.kind === "refused") {
+      hud.status("keybed", `${measured.reason}, nothing measured`);
       return;
     }
-    const end = (a: Point, b: Point): number =>
-      Math.hypot(b.x - a.x, b.y - a.y);
-    const ends = [end(px[1], px[2]), end(px[3], px[0])];
-    const fromAbove = Math.max(...ends) / Math.min(...ends) < TOP_VIEW_ENDS;
-    if (fromAbove) {
-      const units = keybedDepthFromQuad(
-        px,
-        cameraFocalFraction() * video.videoWidth,
-        video.videoWidth / 2,
-        video.videoHeight / 2,
-      );
-      if (units < DEPTH_RANGE[0] || units > DEPTH_RANGE[1]) {
-        hud.status("keybed", "corners do not make a keybed, nothing measured");
-        return;
-      }
-      setKeybedDepth(units);
-      try {
-        localStorage.setItem(DEPTH_KEY, String(units));
-      } catch {
-        // storage can be blocked; the measurement holds for this session
-      }
+    if (measured.kind === "depth") {
+      setKeybedDepth(measured.units);
+      remember(DEPTH_KEY, measured.units);
       hud.status(
         "keybed",
-        `shape measured: ${(WHITE_KEY_COUNT / units).toFixed(2)} key widths per depth`,
+        `shape measured: ${depthInKeyWidths(measured.units).toFixed(2)} key widths per depth`,
       );
       return;
     }
-    const fraction = estimateFocalFraction(
-      px,
-      video.videoWidth,
-      video.videoHeight,
-    );
-    if (fraction < FOCAL_RANGE[0] || fraction > FOCAL_RANGE[1]) {
-      hud.status("keybed", "corners do not make a keybed, nothing measured");
-      return;
-    }
-    setCameraFocal(fraction);
-    try {
-      localStorage.setItem(FOCAL_KEY, String(fraction));
-    } catch {
-      // storage can be blocked; the measurement holds for this session
-    }
+    setCameraFocal(measured.fraction);
+    remember(FOCAL_KEY, measured.fraction);
     hud.status(
       "keybed",
-      `lens measured: focal ${fraction.toFixed(2)} of the frame width`,
+      `lens measured: focal ${measured.fraction.toFixed(2)} of the frame width`,
     );
   });
 
