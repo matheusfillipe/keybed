@@ -1,7 +1,7 @@
 /** Files the runtime loads at runtime rather than imports. Each bundler names
  * them its own way, so the app that embeds this hands them over. */
 export interface RuntimeAssets {
-    /** onnxruntime-web's wasm, the jsep build the WebGPU backend loads. */
+    /** onnxruntime-web's threaded SIMD wasm. */
     readonly ortWasm: string;
     /** MediaPipe's loader script and its wasm. */
     readonly mediapipeLoader: string;

@@ -1,4 +1,4 @@
-import * as ort from "onnxruntime-web/webgpu";
+import * as ort from "onnxruntime-web/wasm";
 import type { RuntimeAssets } from "./assets";
 import { quadFromMask } from "./fitquad";
 import type { Point } from "./homography";
@@ -200,11 +200,13 @@ export async function createDetector(
 ): Promise<Detector> {
   ort.env.wasm.wasmPaths = { wasm: assets.ortWasm };
   ort.env.wasm.numThreads = THREADS;
-  // WebGPU where the browser has it, which is most of them, and the wasm build
-  // behind it for the rest. A segmentation model is exactly the shape of work a
-  // GPU answers in a fraction of the time a single wasm thread takes.
+  // The wasm backend, measured against the alternative: onnxruntime's WebGPU
+  // build fails to start at all on a machine whose adapter it dislikes, and a
+  // failed start leaves the wasm backend unable to start either, so the whole
+  // detector goes with it. The model runs here and the picture is polled rarely
+  // instead.
   const session = await ort.InferenceSession.create(url, {
-    executionProviders: ["webgpu", "wasm"],
+    executionProviders: ["wasm"],
     graphOptimizationLevel: "all",
   });
 
